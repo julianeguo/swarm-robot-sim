@@ -1,0 +1,15 @@
+# Smallest configuration that exercises every code path. Used by tests and
+# by the overfit-a-single-episode sanity run.
+inherits: default.yaml
+
+grid:
+  height: 8
+  width: 8
+
+episode:
+  n_modules: 4
+  max_steps: 40
+  target_walk_steps: 3
+
+curriculum:
+  enabled: false
