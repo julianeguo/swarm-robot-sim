@@ -14,8 +14,8 @@ reward.
 |---|---|---|
 | M0 | Package skeleton, config loading and validation, ASCII renderer | done |
 | M1 | State record, connectivity oracle, movement rules, invariant fuzzer | done |
-| M2 | Shape library, random-walk target generation, curriculum, `Simulator`, random baseline | next |
-| M3 | Observations, reward, greedy baseline | |
+| M2 | Shape library, random-walk target generation, curriculum, `Simulator`, random baseline | done |
+| M3 | Observations, reward, greedy baseline | next |
 | M4 | pygame renderer and episode recording | |
 | M5 | PettingZoo `ParallelEnv` wrapper, `parallel_api_test` | |
 | M6 | Masked IPPO training loop; overfit one tiny episode first | |
@@ -30,7 +30,8 @@ swarm-robot-sim/
 ├── Makefile                    # make test / lint / fmt / demo
 ├── configs/
 │   ├── default.yaml            # baseline: grid, episode, observation, reward, curriculum
-│   └── debug_tiny.yaml         # 8x8, N=4 — used by tests and overfit runs
+│   ├── debug_tiny.yaml         # 8x8, N=4 — plumbing tests and overfit runs only
+│   └── exp_small.yaml          # 16x16, N=9 — first configuration that is a real task
 ├── src/swarm/
 │   ├── config.py               # YAML -> validated dataclasses, with `inherits:` merging
 │   ├── sim/                    # no RL, no PettingZoo, no torch (enforced by a test)
@@ -78,8 +79,13 @@ make demo                    # random-legal walk, invariants asserted every step
 ```
 
 ```bash
+# random-legal walk, invariants asserted every step
 python3 scripts/random_walk_demo.py \
     --config configs/debug_tiny.yaml --steps 40 --render
+
+# baseline statistics over many episodes
+python3 scripts/rollout.py --config configs/exp_small.yaml \
+    --policy random --episodes 150
 ```
 
 The `rl` and `viz` extras (torch, gymnasium, pettingzoo, pygame) are installed
@@ -120,6 +126,14 @@ success rate that is indistinguishable from a learning failure. K is also the
 curriculum dial and gives a free upper bound on the optimal step count.
 Independently sampled shape pairs are kept as a harder held-out evaluation set.
 
+**Degenerate episodes are resampled.** An episode whose target is already
+satisfied at reset teaches nothing. It arises both from rigid start shapes,
+whose generating walk cannot move anything, and from short walks that wander
+back to where they began — 17% of `debug_tiny` episodes before the check was
+added, 0% after. Generation retries up to eight times and then returns the
+degenerate episode anyway rather than looping forever, recording in
+`walk_applied` which case it hit.
+
 **Reward scale.** The shared team reward is
 `delta(filled target cells) * fill_scale / n_modules`, minus a per-step time
 cost, plus a completion bonus. The time cost is specified as a total budget
@@ -128,6 +142,27 @@ fill term can only ever sum to `fill_scale` over a whole episode, so a flat
 penalty would swamp the task signal as `max_steps` grows. The fill term is a
 potential function, so it telescopes and cannot be farmed by moving a module
 on and off a target cell.
+
+**Difficulty is driven by swarm size, not target distance.** Measured with the
+random baseline on a 16x16 grid at K=8:
+
+| modules | random success rate | mean target filled |
+|---|---|---|
+| 4 | 100% | 100% |
+| 6 | 99% | 100% |
+| 9 | 47% | 79% |
+| 12 | 8% | 63% |
+| 16 | 0% | 59% |
+
+K, the number of walk steps used to generate the target, barely moves the
+random baseline: at N=16 even K=1 yields only 2% success, and K=2 through K=32
+are all 0%. That is a property of the baseline rather than of the task — a
+uniform random policy never settles, so it keeps stepping modules off target
+cells no matter how close the target started. Whether K is a useful curriculum
+axis is a question for the greedy baseline, which does settle. What is already
+clear is that `debug_tiny` (N=4) cannot measure learning, since random solves
+it outright; it stays as a plumbing and overfit config, and `exp_small` (N=9)
+is the first setting with real headroom.
 
 **State layout.** Occupancy is a `(H, W)` bool grid and positions are an
 `(N, 2)` int array — the same information in two layouts, since one suits
@@ -138,7 +173,7 @@ the simulator can be batched later.
 ## Tests
 
 ```bash
-make test        # 90 tests, under a second
+make test        # 149 tests, about a second
 ```
 
 The ones that matter most:
@@ -152,7 +187,10 @@ The ones that matter most:
   of a step.
 - **rigid shapes** — lines and solid blocks have no legal moves, pinned so a
   future rule change has to be deliberate.
-- **import hygiene** — `swarm.sim` imports without torch, pettingzoo,
-  gymnasium, or pygame present.
+- **solvability guarantee** — a generated target is reachable because it *is*
+  the start shape walked forward; the walk preserves module count and
+  connectivity, and generated episodes are never already solved.
+- **import hygiene** — `swarm.sim` and `swarm.rl.policies` import without
+  torch, pettingzoo, gymnasium, or pygame present.
 - **reproducibility** — identical seeds give identical shapes and identical
   rollouts.

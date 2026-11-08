@@ -1,0 +1,15 @@
+# First configuration where the task is a real learning problem: the random
+# baseline solves 47% of episodes here, against 100% at N=4 and 0% at N=16.
+inherits: default.yaml
+
+grid:
+  height: 16
+  width: 16
+
+episode:
+  n_modules: 9
+  max_steps: 200
+  target_walk_steps: 8
+
+curriculum:
+  enabled: false
