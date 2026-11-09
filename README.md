@@ -9,63 +9,22 @@ acts on a local observation plus an action mask, and the team shares a single
 reward.
 
 ## Status
-
-| Milestone | Contents | State |
-|---|---|---|
-| M0 | Package skeleton, config loading and validation, ASCII renderer | done |
-| M1 | State record, connectivity oracle, movement rules, invariant fuzzer | done |
-| M2 | Shape library, random-walk target generation, curriculum, `Simulator`, random baseline | done |
-| M3 | Observations, reward, greedy baseline | done |
-| M4 | pygame renderer and episode recording | done |
-| M5 | PettingZoo `ParallelEnv` wrapper, `parallel_api_test` | next |
-| M6 | Masked IPPO training loop; overfit one tiny episode first | |
-| M7 | Curriculum scheduling, checkpointing, held-out evaluation | |
-| M8 | Articulation-point fast path, vectorized observations, scale-up | |
+to be updated
 
 ## Repository layout
 
 ```
 swarm-robot-sim/
-├── pyproject.toml              # deps + pytest/ruff config; src layout
-├── Makefile                    # make test / lint / fmt / demo
-├── configs/
-│   ├── default.yaml            # baseline: grid, episode, observation, reward, curriculum
-│   ├── debug_tiny.yaml         # 8x8, N=4 — plumbing tests and overfit runs only
-│   └── exp_small.yaml          # 16x16, N=9 — first configuration that is a real task
+├── pyproject.toml
 ├── src/swarm/
-│   ├── config.py               # YAML -> validated dataclasses, with `inherits:` merging
-│   ├── sim/                    # no RL, no PettingZoo, no torch (enforced by a test)
-│   │   ├── state.py            # SwarmState: occupancy grid, module positions, target, step
-│   │   ├── connectivity.py     # 4-connectivity flood fill; brute-force reference oracle
-│   │   ├── moves.py            # the movement rules: legal_action_mask(), apply_actions()
-│   │   ├── shapes.py           # connected shape samplers and the fixed shape library
-│   │   ├── episodes.py         # EpisodeSpec, start/target generation, curriculum schedule
-│   │   └── simulator.py        # Simulator.reset() / step(actions) -> (state, info)
-│   ├── obs/
-│   │   └── local_window.py     # state -> per-module observation arrays
-│   ├── reward/
-│   │   ├── base.py             # Reward protocol and registry
-│   │   └── team_fill.py        # shared team reward; variants live beside it
-│   ├── env/
-│   │   ├── parallel_env.py     # PettingZoo ParallelEnv — translation layer only
-│   │   └── spaces.py           # observation/action spaces built from config
-│   ├── rl/
-│   │   ├── networks.py         # shared actor-critic
-│   │   ├── ppo.py              # masked IPPO training loop
-│   │   ├── policies.py         # Policy protocol + RandomLegal, Greedy, Checkpoint
-│   │   └── metrics.py          # episode stats -> TensorBoard/CSV
-│   └── render/
-│       ├── ascii.py            # text rendering; always available, used by tests
-│       ├── pygame_view.py      # optional viewer; pygame stays behind this import
-│       └── recording.py        # GIF and PNG export for recorded episodes
-├── scripts/
-│   ├── random_walk_demo.py     # M1 deliverable: random-legal walk with invariant checks
-│   ├── rollout.py              # run any policy headless, print stats
-│   ├── train.py
-│   ├── evaluate.py             # trained policy + baselines on held-out shapes
-│   ├── play.py                 # pygame viewer for a policy or checkpoint
-│   └── profile_sim.py          # steps/sec regression guard
-└── tests/
+│   ├── hexgrid.py
+│   ├── shapes.py      # fixed shapes + bitmap conversion
+│   ├── sim.py
+│   ├── env.py         # obs = 6 neighbor bits + (x,y,z) position + target bitmap
+│   ├── train.py       # includes the policy network for now
+│   └── render.py      # pygame only
+├── scripts/demo_random.py
+└── tests/test_sim.py
 ```
 
 Directories exist ahead of the milestone that fills them; the table above says
