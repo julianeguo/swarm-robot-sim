@@ -1,12 +1,13 @@
 import numpy as np
+import pytest
 
 from swarm.config import Config, EpisodeConfig, GridConfig
-from swarm.rl.policies import Policy, RandomLegalPolicy, StayPolicy
+from swarm.rl.policies import GreedyPolicy, Policy, RandomLegalPolicy, StayPolicy
 from swarm.sim import moves
 from swarm.sim.episodes import make_episode
 from swarm.sim.simulator import Simulator
 
-from .helpers import random_state
+from .helpers import random_state, state_from_cells
 
 
 def tiny_config() -> Config:
@@ -109,3 +110,154 @@ def test_policies_are_torch_free():
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == ""
+
+
+# -- the greedy baseline -----------------------------------------------
+
+
+def observation_for(state, builder=None):
+    from swarm.config import ObservationConfig
+    from swarm.obs.local_window import ObservationBuilder
+
+    builder = builder or ObservationBuilder(ObservationConfig(), state.grid_shape)
+    return builder.build(state)
+
+
+def run_baseline(policy, cfg, episodes=40, seed=0):
+    """Roll a policy over several episodes and return its success rate."""
+    from swarm.config import ObservationConfig
+    from swarm.obs.local_window import ObservationBuilder
+
+    rng = np.random.default_rng(seed)
+    builder = ObservationBuilder(ObservationConfig(), cfg.grid.shape)
+    simulator = Simulator(seed=seed)
+    successes = 0
+
+    for _ in range(episodes):
+        spec = make_episode(cfg, rng)
+        state = simulator.reset(spec)
+        builder.reset(state.n_modules, rng)
+        while not simulator.done:
+            mask = simulator.legal_action_mask()
+            state, _ = simulator.step(policy.act(builder.build(state, mask), mask))
+        successes += simulator.terminated
+
+    return successes / episodes
+
+
+def test_greedy_satisfies_the_policy_protocol():
+    assert isinstance(GreedyPolicy(seed=0), Policy)
+
+
+def test_greedy_needs_an_observation():
+    with pytest.raises(ValueError, match="needs an observation"):
+        GreedyPolicy(seed=0).act(None, np.ones((2, moves.N_ACTIONS), dtype=bool))
+
+
+def test_greedy_only_returns_legal_actions():
+    rng = np.random.default_rng(0)
+    for epsilon in (0.0, 0.3, 1.0):
+        policy = GreedyPolicy(seed=0, epsilon=epsilon)
+        for _ in range(30):
+            state = random_state(rng, n_modules=int(rng.integers(1, 10)))
+            state.target[:] = False
+            state.target[0, 0] = True
+            mask = moves.legal_action_mask(state)
+            actions = policy.act(observation_for(state), mask)
+            assert mask[np.arange(state.n_modules), actions].all(), f"epsilon={epsilon}"
+
+
+def test_greedy_steps_toward_an_unfilled_target():
+    # An L whose corner module needs one step right to finish the shape.
+    state = state_from_cells([(2, 2), (3, 2), (3, 3)], (8, 8), target=[(2, 3), (3, 2), (3, 3)])
+    actions = GreedyPolicy(seed=0).act(observation_for(state), moves.legal_action_mask(state))
+    assert actions[0] == moves.RIGHT
+
+
+def test_greedy_holds_a_module_that_is_already_on_target():
+    """Leaving a filled cell undoes progress the team is scored on."""
+    state = state_from_cells([(2, 2), (3, 2), (3, 3)], (8, 8), target=[(2, 2), (3, 2), (3, 3)])
+    actions = GreedyPolicy(seed=0).act(observation_for(state), moves.legal_action_mask(state))
+    assert (actions == moves.STAY).all()
+
+
+def test_greedy_stays_when_the_target_is_complete():
+    state = state_from_cells([(2, 2), (3, 2)], (8, 8), target=[(2, 2), (3, 2)])
+    obs = observation_for(state)
+    assert obs["aux"]["n_unfilled"] == 0
+    actions = GreedyPolicy(seed=0).act(obs, moves.legal_action_mask(state))
+    assert (actions == moves.STAY).all()
+
+
+def test_greedy_deadlocks_without_an_escape():
+    """Pure greedy freezes: the move a module wants is usually illegal.
+
+    Recorded because it is the reason epsilon exists, and because the naive
+    heuristic looks reasonable right up until it is measured.
+    """
+    cfg = Config(
+        grid=GridConfig(height=16, width=16),
+        episode=EpisodeConfig(n_modules=9, max_steps=120, target_walk_steps=8),
+    )
+    from swarm.config import ObservationConfig
+    from swarm.obs.local_window import ObservationBuilder
+
+    rng = np.random.default_rng(0)
+    builder = ObservationBuilder(ObservationConfig(), cfg.grid.shape)
+    simulator = Simulator(seed=0)
+    policy = GreedyPolicy(seed=0, epsilon=0.0)
+
+    frozen = total = 0
+    for _ in range(10):
+        spec = make_episode(cfg, rng)
+        state = simulator.reset(spec)
+        while not simulator.done:
+            mask = simulator.legal_action_mask()
+            state, info = simulator.step(policy.act(builder.build(state, mask), mask))
+            frozen += info["n_applied"] == 0
+            total += 1
+
+    assert frozen / total > 0.8, "pure greedy is expected to be frozen on most steps"
+
+
+def test_epsilon_unfreezes_greedy():
+    cfg = Config(
+        grid=GridConfig(height=16, width=16),
+        episode=EpisodeConfig(n_modules=9, max_steps=200, target_walk_steps=8),
+    )
+    pure = run_baseline(GreedyPolicy(seed=0, epsilon=0.0), cfg)
+    escaping = run_baseline(GreedyPolicy(seed=0, epsilon=0.3), cfg)
+    assert escaping > pure + 0.3, f"epsilon=0.3 ({escaping}) should clear pure greedy ({pure})"
+
+
+def test_greedy_with_escape_beats_random():
+    """The bar the learned policy has to clear."""
+    cfg = Config(
+        grid=GridConfig(height=16, width=16),
+        episode=EpisodeConfig(n_modules=9, max_steps=200, target_walk_steps=8),
+    )
+    greedy = run_baseline(GreedyPolicy(seed=0, epsilon=0.3), cfg)
+    random_legal = run_baseline(RandomLegalPolicy(seed=0), cfg)
+    assert greedy > random_legal
+
+
+def test_epsilon_one_is_equivalent_to_random():
+    """A sanity check on the escape: all-exploration greedy is the random policy."""
+    cfg = Config(
+        grid=GridConfig(height=16, width=16),
+        episode=EpisodeConfig(n_modules=9, max_steps=200, target_walk_steps=8),
+    )
+    saturated = run_baseline(GreedyPolicy(seed=0, epsilon=1.0), cfg)
+    random_legal = run_baseline(RandomLegalPolicy(seed=0), cfg)
+    assert abs(saturated - random_legal) < 0.25
+
+
+def test_strict_greedy_matches_plain_greedy_in_practice():
+    """Both freeze for the same reason: a sideways step scores worse than staying."""
+    cfg = Config(
+        grid=GridConfig(height=16, width=16),
+        episode=EpisodeConfig(n_modules=9, max_steps=120, target_walk_steps=8),
+    )
+    strict = run_baseline(GreedyPolicy(seed=0, strict=True), cfg, episodes=20)
+    plain = run_baseline(GreedyPolicy(seed=0, strict=False), cfg, episodes=20)
+    assert abs(strict - plain) < 0.2

@@ -15,8 +15,8 @@ reward.
 | M0 | Package skeleton, config loading and validation, ASCII renderer | done |
 | M1 | State record, connectivity oracle, movement rules, invariant fuzzer | done |
 | M2 | Shape library, random-walk target generation, curriculum, `Simulator`, random baseline | done |
-| M3 | Observations, reward, greedy baseline | next |
-| M4 | pygame renderer and episode recording | |
+| M3 | Observations, reward, greedy baseline | done |
+| M4 | pygame renderer and episode recording | next |
 | M5 | PettingZoo `ParallelEnv` wrapper, `parallel_api_test` | |
 | M6 | Masked IPPO training loop; overfit one tiny episode first | |
 | M7 | Curriculum scheduling, checkpointing, held-out evaluation | |
@@ -86,6 +86,10 @@ python3 scripts/random_walk_demo.py \
 # baseline statistics over many episodes
 python3 scripts/rollout.py --config configs/exp_small.yaml \
     --policy random --episodes 150
+
+# the bar a learned policy has to clear
+python3 scripts/rollout.py --config configs/exp_small.yaml \
+    --policy greedy --epsilon 0.2 --episodes 150
 ```
 
 The `rl` and `viz` extras (torch, gymnasium, pettingzoo, pygame) are installed
@@ -154,15 +158,60 @@ random baseline on a 16x16 grid at K=8:
 | 12 | 8% | 63% |
 | 16 | 0% | 59% |
 
-K, the number of walk steps used to generate the target, barely moves the
-random baseline: at N=16 even K=1 yields only 2% success, and K=2 through K=32
-are all 0%. That is a property of the baseline rather than of the task — a
-uniform random policy never settles, so it keeps stepping modules off target
-cells no matter how close the target started. Whether K is a useful curriculum
-axis is a question for the greedy baseline, which does settle. What is already
-clear is that `debug_tiny` (N=4) cannot measure learning, since random solves
-it outright; it stays as a plumbing and overfit config, and `exp_small` (N=9)
-is the first setting with real headroom.
+`debug_tiny` (N=4) therefore cannot measure learning, since random solves it
+outright. It stays as a plumbing and overfit-sanity config, and `exp_small`
+(N=9) is the first setting with real headroom.
+
+**K is a real difficulty dial, but only for a policy that settles.** The random
+baseline is blind to it — at N=16 even K=1 gives 2% success and K=2 through K=32
+are all 0% — because a uniform random policy never stops moving and keeps
+stepping modules back off cells it had already filled. The greedy baseline does
+settle, and for it K behaves exactly as the curriculum design assumes
+(N=16, epsilon=0.2):
+
+| K | greedy success | mean steps to solve |
+|---|---|---|
+| 1 | 97% | 7 |
+| 2 | 93% | 30 |
+| 4 | 86% | 37 |
+| 8 | 78% | 53 |
+| 16 | 67% | 63 |
+| 32 | 59% | 78 |
+
+**Greedy needs a deadlock escape, and it is not optional.** "Move toward the
+nearest unfilled target cell if legal, otherwise stay" applies zero moves on
+**99% of steps**: with only ~45% of modules mobile at any instant the move a
+module wants is usually illegal, and under Manhattan distance every sideways
+alternative scores strictly worse than staying put, so the swarm freezes within
+a step or two and never recovers. Taking a uniformly random legal action with
+probability `epsilon` fixes it, and the effect is not marginal (N=9, 16x16):
+
+| policy | success | target filled | mean steps | rejection |
+|---|---|---|---|---|
+| stay | 0% | 73% | 200 | — |
+| random | 47% | 79% | 131 | 27% |
+| greedy, epsilon=0 | 33% | 89% | 134 | 5% |
+| greedy, epsilon=0.2 | 95% | 99% | 32 | 12% |
+| greedy, epsilon=0.4 | 98% | 100% | 34 | 16% |
+| greedy, epsilon=1.0 | 42% | 77% | 145 | 27% |
+
+The curve is an inverted U and epsilon=1.0 lands back on the random baseline,
+which is the sanity check that the escape is doing what it claims. The optimum
+shifts with swarm size: epsilon=0.4 at N=9, epsilon=0.2 at N=16 (78% success
+where random scores 0%). That 78% is the bar the learned policy has to clear.
+
+**Observations.** Each module gets a 3-channel egocentric window (occupancy,
+target, out-of-bounds — a wall and an empty cell are different things when
+choosing a move), the k=3 nearest unfilled target cells as direction/distance
+pairs with a validity flag, an on-target flag, its position relative to the
+swarm centroid, and its action mask. Direction is split across the two axes so
+the pair is bounded in [-1, 1]; distance is Manhattan, which is the true lower
+bound on move count under 4-neighbour movement. Relative position is the
+default because absolute position ties the policy to one grid size. Module tags
+and a coarse pooled global map are built but default off, to be turned on if
+congestion shows up as the limiting factor. The `aux` entry carries raw integer
+deltas for the greedy baseline and debugging, and is deliberately not part of
+the policy input.
 
 **State layout.** Occupancy is a `(H, W)` bool grid and positions are an
 `(N, 2)` int array — the same information in two layouts, since one suits
@@ -173,7 +222,7 @@ the simulator can be batched later.
 ## Tests
 
 ```bash
-make test        # 149 tests, about a second
+make test        # 202 tests, about seven seconds
 ```
 
 The ones that matter most:
@@ -190,6 +239,14 @@ The ones that matter most:
 - **solvability guarantee** — a generated target is reachable because it *is*
   the start shape walked forward; the walk preserves module count and
   connectivity, and generated episodes are never already solved.
+- **reward telescopes** — total fill reward over an episode depends only on
+  start and end occupancy, so stepping on and off a target cell nets zero and
+  the completion bonus can only fire once.
+- **observation layout** — field offsets come from one spec that the env, the
+  network, and the tests all read, and hand-built fixtures pin window centring,
+  edge clipping, and nearest-target ordering.
+- **greedy deadlock** — pinned at >80% frozen steps without an escape, since
+  the naive heuristic looks reasonable until it is measured.
 - **import hygiene** — `swarm.sim` and `swarm.rl.policies` import without
   torch, pettingzoo, gymnasium, or pygame present.
 - **reproducibility** — identical seeds give identical shapes and identical
