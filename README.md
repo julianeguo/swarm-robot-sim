@@ -16,8 +16,8 @@ reward.
 | M1 | State record, connectivity oracle, movement rules, invariant fuzzer | done |
 | M2 | Shape library, random-walk target generation, curriculum, `Simulator`, random baseline | done |
 | M3 | Observations, reward, greedy baseline | done |
-| M4 | pygame renderer and episode recording | next |
-| M5 | PettingZoo `ParallelEnv` wrapper, `parallel_api_test` | |
+| M4 | pygame renderer and episode recording | done |
+| M5 | PettingZoo `ParallelEnv` wrapper, `parallel_api_test` | next |
 | M6 | Masked IPPO training loop; overfit one tiny episode first | |
 | M7 | Curriculum scheduling, checkpointing, held-out evaluation | |
 | M8 | Articulation-point fast path, vectorized observations, scale-up | |
@@ -56,7 +56,8 @@ swarm-robot-sim/
 │   │   └── metrics.py          # episode stats -> TensorBoard/CSV
 │   └── render/
 │       ├── ascii.py            # text rendering; always available, used by tests
-│       └── pygame_view.py      # optional viewer, imported lazily, off during training
+│       ├── pygame_view.py      # optional viewer; pygame stays behind this import
+│       └── recording.py        # GIF and PNG export for recorded episodes
 ├── scripts/
 │   ├── random_walk_demo.py     # M1 deliverable: random-legal walk with invariant checks
 │   ├── rollout.py              # run any policy headless, print stats
@@ -90,6 +91,11 @@ python3 scripts/rollout.py --config configs/exp_small.yaml \
 # the bar a learned policy has to clear
 python3 scripts/rollout.py --config configs/exp_small.yaml \
     --policy greedy --epsilon 0.2 --episodes 150
+
+# watch it, or record it without opening a window
+python3 scripts/play.py --config configs/exp_small.yaml --policy greedy --epsilon 0.2
+python3 scripts/play.py --config configs/exp_small.yaml --policy greedy --epsilon 0 \
+    --episodes 2 --record runs/greedy_frozen.gif --headless
 ```
 
 The `rl` and `viz` extras (torch, gymnasium, pettingzoo, pygame) are installed
@@ -200,6 +206,31 @@ which is the sanity check that the escape is doing what it claims. The optimum
 shifts with swarm size: epsilon=0.4 at N=9, epsilon=0.2 at N=16 (78% success
 where random scores 0%). That 78% is the bar the learned policy has to clear.
 
+**What the viewer showed: the blocker is vacating, not congestion.** Recording
+pure greedy's failures turned the 99%-frozen number into a specific mechanism.
+In the canonical case a single module sits one *diagonal* step from the last
+unfilled target cell. Both orthogonal routes to it run through cells occupied by
+modules that are already on target, and greedy never moves a module off a target
+cell, so nothing happens for 199 consecutive steps. Across 120 episodes at N=9:
+
+- 70 failed, and in **all 70** the swarm still had legal moves available — the
+  configuration is never globally frozen, the policy is just declining to use it.
+- 41 of 70 failed with exactly **one** target cell left unfilled.
+- The stray module was 1 or 2 cells from the gap in 52 of 70 cases.
+- Of 75 diagonal stray/gap pairs, **42 had both orthogonal routes blocked by
+  modules sitting on target cells**.
+
+That reframes the coordination problem. The congestion story — several modules
+racing for the same gap — is not what fails here. What fails is *vacating*: a
+module on a target cell has to step off, taking an immediate `-1/n_modules`
+penalty, so that another module can pass through and complete the shape later.
+The team reward does make that worthwhile in the end, but the gain is delayed
+and the cost is immediate, which is a credit-assignment problem rather than a
+tie-breaking one. It also lowers the expected value of the deferred observation
+extras: module tags and the pooled global map address congestion, which is not
+the bottleneck. And it is a second concrete argument for the 8-neighbour rule
+set, which would resolve those 42 diagonal cases in a single move.
+
 **Observations.** Each module gets a 3-channel egocentric window (occupancy,
 target, out-of-bounds — a wall and an empty cell are different things when
 choosing a move), the k=3 nearest unfilled target cells as direction/distance
@@ -222,7 +253,7 @@ the simulator can be batched later.
 ## Tests
 
 ```bash
-make test        # 202 tests, about seven seconds
+make test        # 220 tests, about nine seconds
 ```
 
 The ones that matter most:
@@ -247,6 +278,9 @@ The ones that matter most:
   edge clipping, and nearest-target ordering.
 - **greedy deadlock** — pinned at >80% frozen steps without an escape, since
   the naive heuristic looks reasonable until it is measured.
+- **renderer** — runs headless under SDL's dummy driver, so recording needs no
+  display; each cell category renders its own colour and row 0 draws at the top,
+  matching the ASCII renderer.
 - **import hygiene** — `swarm.sim` and `swarm.rl.policies` import without
   torch, pettingzoo, gymnasium, or pygame present.
 - **reproducibility** — identical seeds give identical shapes and identical

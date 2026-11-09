@@ -57,3 +57,33 @@ def test_ascii_renderer_needs_no_pygame():
         """
     )
     assert leaked == ""
+
+
+def test_render_package_does_not_import_pygame():
+    """pygame must stay behind an explicit import of the viewer module.
+
+    Training imports the simulator and the observation builder; if touching
+    swarm.render pulled in SDL, every training run would pay for a display
+    stack it never uses.
+    """
+    leaked = run_probe(
+        """
+        import sys
+        sys.path.insert(0, "src")
+        import swarm.render
+        print("pygame" if "pygame" in sys.modules else "")
+        """
+    )
+    assert leaked == ""
+
+
+def test_observations_and_rewards_are_torch_free():
+    leaked = run_probe(
+        f"""
+        import sys
+        sys.path.insert(0, "src")
+        import swarm.obs.local_window, swarm.reward
+        print(",".join(m for m in {FORBIDDEN!r} if m in sys.modules))
+        """
+    )
+    assert leaked == "", f"obs/reward pulled in forbidden modules: {leaked}"
