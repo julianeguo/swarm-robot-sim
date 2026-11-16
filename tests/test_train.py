@@ -2,10 +2,13 @@
 #
 # Key idea: these tests do NOT use the real env.py. They use FakeEnv (below), a tiny env
 # that follows the same contract written at the top of train.py. That way:
-#   * train.py can be tested before env.py / sim.py exist,
+#   * train.py can be tested before env.py defines SwarmEnv,
 #   * a failure here points at train.py, not at the simulator,
 #   * FakeEnv doubles as a runnable example of what env.py must return.
+# The few tests that touch sim.py check the pieces train.py shares with it (action count,
+# action mask), so the two can't drift apart.
 
+import random
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -14,7 +17,8 @@ import pytest
 
 torch = pytest.importorskip("torch")  # skip this file cleanly if torch isn't installed
 
-from swarm import train  # noqa: E402  (must come after the importorskip above)
+from swarm import sim, train  # noqa: E402  (must come after the importorskip above)
+from swarm.shapes import make_shape, shape_radius  # noqa: E402
 
 CONFIGS = Path(__file__).resolve().parent.parent / "configs"
 
@@ -82,6 +86,39 @@ class FakeEnv:
 
     def close(self):
         pass
+
+
+class TerminatingFakeEnv(FakeEnv):
+    """FakeEnv that ends episodes by termination instead of truncation.
+
+    The real env terminates as soon as the target is complete (sim.completion() == 1.0), so
+    train.py must treat termination the same as hitting max_steps.
+    """
+
+    def step(self, actions):
+        obs, rewards, terms, truncs, infos = super().step(actions)
+        return obs, rewards, truncs, terms, infos  # swap: the episode end is a termination
+
+
+class GlobalRandomFakeEnv(FakeEnv):
+    """FakeEnv whose randomness comes from Python's global `random`, like sim.apply_actions
+    (which breaks move conflicts with random.shuffle). Only train()'s own seeding makes it
+    repeatable: reset(seed=...) deliberately ignores the seed.
+    """
+
+    def reset(self, seed=None):
+        return super().reset(seed=None)
+
+    def _observe(self):
+        self.correct = np.array([random.randrange(6) for _ in self.possible_agents])
+        obs = {}
+        for n, agent in enumerate(self.possible_agents):
+            one_hot = np.zeros(7, dtype=np.float32)
+            one_hot[self.correct[n]] = 1.0
+            mask = np.ones(7, dtype=bool)
+            mask[6] = False
+            obs[agent] = {"observation": one_hot, "action_mask": mask}
+        return obs
 
 
 def greedy_reward_per_step(policy, n_steps=100):
@@ -153,6 +190,37 @@ def test_policy_never_picks_masked_actions():
     assert (dist.sample() == 0).all()
     assert not torch.isnan(dist.probs).any()
     assert not torch.isnan(value).any()
+
+
+# --- Agreement with sim.py -----------------------------------------------------------------
+
+
+def test_n_actions_comes_from_sim():
+    """train.py and sim.py share one action count: stay + 6 moves."""
+    assert train.N_ACTIONS is sim.N_ACTIONS
+    assert train.N_ACTIONS == 7
+
+
+def test_policy_actions_are_accepted_by_sim():
+    """Sampling with sim.legal_action_mask() only gives actions apply_actions accepts.
+
+    apply_actions raises ValueError on any illegal action, so this runs many steps of real
+    sim play through the policy's masking and checks nothing ever slips through.
+    """
+    torch.manual_seed(0)
+    random.seed(0)
+    start, target = make_shape("circle", 12), make_shape("rectangle", 12)
+    n_steps = 30
+    swarm = sim.SwarmSim(shape_radius(start) + shape_radius(target) + n_steps + 1)
+    swarm.reset(start, target)
+    policy = train.Policy(obs_size=10, hidden=16)
+
+    for _ in range(n_steps):
+        mask = torch.from_numpy(swarm.legal_action_mask())
+        assert mask.shape == (swarm.n, train.N_ACTIONS)
+        with torch.no_grad():
+            dist, _ = policy(torch.randn(swarm.n, 10), mask)
+        swarm.apply_actions(dist.sample().numpy())  # raises if any action was illegal
 
 
 # --- compute_advantages --------------------------------------------------------------------
@@ -229,6 +297,19 @@ def test_collect_rollout_shapes_and_episodes():
     assert set(obs) == set(env.possible_agents)
 
 
+def test_collect_rollout_treats_termination_as_episode_end():
+    """Termination (target completed) ends an episode just like truncation (max_steps)."""
+    torch.manual_seed(0)
+    env = TerminatingFakeEnv()
+    obs, _ = env.reset(seed=0)
+    policy = train.Policy(obs_size=7, hidden=16)
+
+    batch, _, successes = train.collect_rollout(env, policy, obs, n_steps=12)
+
+    assert batch["done"][:, 0].nonzero().flatten().tolist() == [4, 9]
+    assert len(successes) == 2
+
+
 # --- ppo_update ----------------------------------------------------------------------------
 
 
@@ -263,7 +344,7 @@ def test_ppo_update_moves_policy_toward_good_actions():
 
 
 def test_train_without_env_gives_clear_error(monkeypatch):
-    """Until env.py exists, train() should say so instead of failing somewhere obscure."""
+    """Until env.py defines SwarmEnv, train() should say so instead of failing obscurely."""
     monkeypatch.setattr(train, "SwarmEnv", None)
     with pytest.raises(RuntimeError, match="env.py"):
         train.train({"seed": 0})
@@ -289,3 +370,20 @@ def test_train_learns_fake_task(monkeypatch, tmp_path, capsys):
     reloaded = train.Policy(obs_size=7, hidden=train.DEFAULTS["hidden"])
     reloaded.load_state_dict(torch.load(tmp_path / "policy.pt"))
     assert greedy_reward_per_step(reloaded) == greedy_reward_per_step(policy)
+
+
+def test_train_seeds_python_random(monkeypatch, tmp_path):
+    """Same seed -> same trained weights, even when the env draws from Python's `random`.
+
+    sim.apply_actions breaks move conflicts with random.shuffle, so train() must seed
+    `random` itself; torch.manual_seed alone would leave runs unrepeatable.
+    """
+    monkeypatch.setattr(train, "SwarmEnv", lambda cfg: GlobalRandomFakeEnv())
+    monkeypatch.chdir(tmp_path)
+    cfg = {"seed": 3, "train": {"total_steps": 200, "rollout_steps": 50, "log_every": 100}}
+
+    first = train.train(cfg).state_dict()
+    random.random()  # disturb the global state between runs; train() must reset it
+    second = train.train(cfg).state_dict()
+
+    assert all(torch.equal(first[k], second[k]) for k in first)
