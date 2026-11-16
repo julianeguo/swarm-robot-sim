@@ -22,10 +22,11 @@ env is a PettingZoo ParallelEnv with a fixed number of modules N.
   obs[agent] = {
       "observation": 1-D float array, the same length for every module:
           6 neighbour bits (hexgrid.DIRS order)
-        + 3 numbers: normalized (x, y, z) position
+        + 2 numbers: position (i, j), divided by R
         + the target bitmap around the origin, radius R, flattened
-          (R = largest shape radius + a small margin. The target is always centred on
-           the origin, so this small crop holds the whole target. env.py builds it.)
+          (R = largest start shape radius + K, the number of random-walk moves that make the
+           target. The target is always within R of the origin, so this small crop holds the
+           whole target. env.py builds it.)
       "action_mask": 7 bools, True = legal (from sim.legal_action_mask())
   }
   actions[agent] = int in 0..6   (0 = stay, 1..6 = move toward hexgrid.DIRS[a - 1])

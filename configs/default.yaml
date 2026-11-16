@@ -9,24 +9,18 @@ grid:
 episode:
   n_modules: 16
   max_steps: 200
-  # K: the target shape is the start shape after this many random legal moves.
-  # Guarantees the episode is solvable and acts as the difficulty dial.
+  # K: the target shape is the start shape after this many random legal moves, one robot
+  # per move. Guarantees the episode is solvable and acts as the difficulty dial.
   target_walk_steps: 8
-
-observation:
-  window: 5                  # must be odd
-  k_nearest_targets: 3       # direction+distance to the k nearest unfilled target cells
-  use_relative_position: true    # position relative to swarm centroid (generalizes)
-  use_absolute_position: false   # normalized absolute position (ties policy to grid size)
-  use_module_tag: false          # per-episode random scalar, breaks shared-policy symmetry
-  use_global_map: false          # coarse pooled occupancy-minus-target map
-  global_map_size: 10
+  # Each episode starts from one of these (names from shapes.SHAPE_NAMES), picked at random.
+  start_shapes: [circle, rectangle, star]
 
 reward:
   name: team_fill
   fill_scale: 1.0          # delta(filled targets) * fill_scale / n_modules
   time_cost_total: 0.5     # per-step penalty is this divided by max_steps
   completion_bonus: 1.0
+  isolation_penalty: 0.0   # per-step penalty is this * (robots with no neighbours) / n_modules
 
 curriculum:
   enabled: true

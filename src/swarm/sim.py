@@ -63,6 +63,18 @@ class SwarmSim:
         self.occupied = hexgrid.cells_to_mask(start, self.m)
         self.target = hexgrid.cells_to_mask(target, self.m)
 
+    def neighbor_occupancy(self):
+        """Return an (N, 6) bool array: True where robot n's neighbour in direction k is taken.
+
+        Columns follow hexgrid.DIRS order. Used for the legal action mask, and by env.py for
+        each robot's 6 neighbour bits and to count robots with no neighbours.
+        """
+        nbs = hexgrid.neighbors(self.positions)  # (N, 6, 2)
+        # Off-board neighbours would wrap around to the far side of the array silently.
+        assert hexgrid.in_bounds(nbs, self.m).all(), "a robot is at the board edge; M too small"
+        idx = hexgrid.to_index(nbs, self.m)
+        return self.occupied[idx[..., 0], idx[..., 1]]
+
     def legal_action_mask(self):
         """Return an (N, 7) bool array: True where robot n may take action a.
 
@@ -78,11 +90,7 @@ class SwarmSim:
         This only looks at the current board. Two robots may both be allowed into the same
         cell here; apply_actions resolves that.
         """
-        nbs = hexgrid.neighbors(self.positions)  # (N, 6, 2)
-        # Off-board neighbours would wrap around to the far side of the array silently.
-        assert hexgrid.in_bounds(nbs, self.m).all(), "a robot is at the board edge; M too small"
-        idx = hexgrid.to_index(nbs, self.m)
-        occ = self.occupied[idx[..., 0], idx[..., 1]]  # (N, 6): is neighbour k taken?
+        occ = self.neighbor_occupancy()  # (N, 6): is neighbour k taken?
 
         # np.roll(occ, -1)[:, d] == occ[:, d + 1] and np.roll(occ, 1)[:, d] == occ[:, d - 1].
         has_pivot = np.roll(occ, -1, axis=1) | np.roll(occ, 1, axis=1)
