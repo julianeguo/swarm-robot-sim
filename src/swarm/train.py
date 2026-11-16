@@ -257,9 +257,7 @@ def train(cfg):
     recent_successes = []
     for update in range(1, n_updates + 1):
         batch, obs, successes = collect_rollout(env, policy, obs, settings["rollout_steps"])
-        advantages, returns = compute_advantages(
-            batch, settings["gamma"], settings["gae_lambda"]
-        )
+        advantages, returns = compute_advantages(batch, settings["gamma"], settings["gae_lambda"])
         losses = ppo_update(policy, optimizer, batch, advantages, returns, settings)
         recent_successes += successes
 

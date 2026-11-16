@@ -13,3 +13,6 @@ runs/
 checkpoints/
 *.gif
 *.mp4
+
+# Training output (train.py saves policy.pt in the working directory)
+*.pt
