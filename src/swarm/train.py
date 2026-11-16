@@ -14,6 +14,7 @@ Run with:  python -m swarm.train configs/debug_tiny.yaml
 What train.py expects from env.py (the only file it talks to)
 -------------------------------------------------------------------------------------------
 env is a PettingZoo ParallelEnv with a fixed number of modules N.
+("Module" here and "robot" in sim.py mean the same thing.)
 
   obs, infos = env.reset(seed=...)
   obs, rewards, terminations, truncations, infos = env.step(actions)
@@ -21,20 +22,26 @@ env is a PettingZoo ParallelEnv with a fixed number of modules N.
   obs[agent] = {
       "observation": 1-D float array, the same length for every module:
           6 neighbour bits (hexgrid.DIRS order)
-        + 2 numbers: position (i, j), divided by the target radius R
+        + 3 numbers: normalized (x, y, z) position
         + the target bitmap around the origin, radius R, flattened
           (R = largest shape radius + a small margin. The target is always centred on
            the origin, so this small crop holds the whole target. env.py builds it.)
       "action_mask": 7 bools, True = legal (from sim.legal_action_mask())
   }
   actions[agent] = int in 0..6   (0 = stay, 1..6 = move toward hexgrid.DIRS[a - 1])
-  rewards[agent] = the same team reward for every module (config `reward:`)
-  infos[agent]["success"] = True if the target shape was completed (set when the episode ends)
+  rewards[agent] = the team reward for this step, the same for every module: built from the
+                   change in sim.completion() over the step, scaled by the config `reward:`
+                   block (which also sets the time cost and the completion bonus)
+  infos[agent]["success"] = True if sim.completion() == 1.0 (set when the episode ends)
+
+An episode ends by termination (target completed) or truncation (max_steps). All modules end
+together, and train.py treats both the same way.
 
 Everything about shapes, the board, and the movement rules lives in env.py / sim.py.
-train.py never imports hexgrid or shapes.
+train.py never imports hexgrid or shapes. From sim.py it takes only N_ACTIONS.
 """
 
+import random
 import sys
 from pathlib import Path
 
@@ -43,12 +50,12 @@ import torch
 import torch.nn as nn
 import yaml
 
+from swarm.sim import N_ACTIONS  # 7: stay + 6 moves. One definition, shared with the sim.
+
 try:
     from swarm.env import SwarmEnv
-except ImportError:  # env.py isn't written yet. Tests swap in a fake env instead.
+except ImportError:  # env.py doesn't define SwarmEnv yet. Tests swap in a fake env instead.
     SwarmEnv = None
-
-N_ACTIONS = 7
 
 # Training settings. Values in the config's `train:` block override these.
 DEFAULTS = {
@@ -232,12 +239,15 @@ def ppo_update(policy, optimizer, batch, advantages, returns, cfg):
 def train(cfg):
     """Tie it together: make the env and policy, then alternate collecting and updating."""
     settings = {**DEFAULTS, **(cfg.get("train") or {})}
-    torch.manual_seed(cfg.get("seed", 0))
+    seed = cfg.get("seed", 0)
+    torch.manual_seed(seed)
+    random.seed(seed)  # sim.apply_actions breaks move conflicts with Python's `random`
+    np.random.seed(seed)
 
     if SwarmEnv is None:
         raise RuntimeError("swarm.env.SwarmEnv is not available yet; write env.py first")
     env = SwarmEnv(cfg)
-    obs, _ = env.reset(seed=cfg.get("seed", 0))
+    obs, _ = env.reset(seed=seed)
     obs_size = env.observation_space(env.possible_agents[0])["observation"].shape[0]
 
     policy = Policy(obs_size, settings["hidden"])
