@@ -17,6 +17,8 @@ The board radius M is chosen by the caller (env.py, via hexgrid.board_radius) an
 for the sim's lifetime, so every episode uses the same board size.
 """
 
+import random
+
 import numpy as np
 
 from swarm import hexgrid
@@ -87,6 +89,64 @@ class SwarmSim:
         mask = np.ones((self.n, N_ACTIONS), dtype=bool)
         mask[:, 1:] = ~occ & has_pivot
         return mask
+
+    def apply_actions(self, actions):
+        """Move every robot at once. actions is (N,) ints in 0..6, one per robot, in robot order.
+
+        Every action must be legal under legal_action_mask() for the current board; an illegal
+        one raises ValueError (the trained policy never picks one, so this means a bug).
+
+        Conflicts, since all robots move at the same time:
+          * Several robots heading for the same empty cell: one of them, picked at random,
+            moves there; the others stay where they are.
+          * A robot's pivot moving away in the same step is ignored: the pivot only has to be
+            there at the start of the step. A robot can end up with no neighbours; it then
+            can only stay until another robot comes next to it.
+
+        Returns an (N,) bool array: True for robots that actually moved.
+        """
+        actions = np.asarray(actions, dtype=np.int64)
+        if actions.shape != (self.n,):
+            raise ValueError(f"expected {self.n} actions, got shape {actions.shape}")
+        if ((actions < 0) | (actions >= N_ACTIONS)).any():
+            raise ValueError(f"actions must be in 0..{N_ACTIONS - 1}")
+        legal = self.legal_action_mask()[np.arange(self.n), actions]
+        if not legal.all():
+            raise ValueError(f"illegal actions for robots {np.flatnonzero(~legal).tolist()}")
+
+        # Visit the movers in random order; the first to claim a cell gets it.
+        movers = np.flatnonzero(actions != 0).tolist()
+        random.shuffle(movers)
+        moved = np.zeros(self.n, dtype=bool)
+        claimed = set()
+        for n in movers:
+            dest = self.positions[n] + hexgrid.DIRS[actions[n] - 1]
+            if tuple(dest.tolist()) in claimed:
+                continue
+            claimed.add(tuple(dest.tolist()))
+            # The destination was empty at the start of the step (the mask checked it), and
+            # no other robot has claimed it, so the write order here doesn't matter.
+            old_r, old_c = hexgrid.to_index(self.positions[n], self.m)
+            new_r, new_c = hexgrid.to_index(dest, self.m)
+            self.occupied[old_r, old_c] = False
+            self.occupied[new_r, new_c] = True
+            self.positions[n] = dest
+            moved[n] = True
+        return moved
+
+    def filled(self):
+        """Number of target cells that currently have a robot on them (0..N)."""
+        return int((self.occupied & self.target).sum())
+
+    def completion(self):
+        """Fraction of target cells filled, 0.0 to 1.0. 1.0 means the target shape is done.
+
+        Meant to be read once per step, after apply_actions, never partway through it: all
+        robots move at the same time, so the order apply_actions handles them in has no
+        meaning. The env reads it before and after each step and uses the change as the
+        per-step reward.
+        """
+        return self.filled() / self.n
 
 
 def _as_cells(cells, name):
