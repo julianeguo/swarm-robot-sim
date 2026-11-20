@@ -10,7 +10,7 @@ fmt:
 	python3 -m ruff format .
 
 demo:
-	python3 scripts/random_walk_demo.py --config configs/debug_tiny.yaml --steps 40 --render
+	python3 scripts/demo_random.py --config configs/debug_tiny.yaml --steps 40 --render
 
 clean:
 	find . -name __pycache__ -type d -prune -exec rm -rf {} +
