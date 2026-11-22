@@ -6,7 +6,14 @@ observation, picks one of 7 actions (illegal ones masked out), and the whole tea
 one shared reward. After a batch of steps we do a few PPO updates and print progress.
 
 Kept out on purpose for now (add later, one at a time, when needed):
-curriculum, evaluation runs, TensorBoard, checkpoints, minibatches, CNN encoder.
+curriculum, evaluation runs, TensorBoard, minibatches, CNN encoder.
+
+Outputs (in the working directory):
+  checkpoints/latest.pt  the weights at the most recent progress line
+  checkpoints/best.pt    the weights with the best success rate seen in a progress window
+  policy.pt              the final weights
+Early stopping (off by default): set train.stop_success, e.g. 0.99, and training ends once
+the success rate reaches it in stop_patience progress windows in a row.
 
 Run with:  python -m swarm.train configs/debug_tiny.yaml
 
@@ -69,7 +76,10 @@ DEFAULTS = {
     "n_epochs": 4,  # passes over each rollout
     "ent_coef": 0.01,  # bonus for keeping the policy random (exploration)
     "hidden": 128,  # width of the network layers
-    "log_every": 10,  # print progress every this many updates
+    "log_every": 10,  # print progress (and save checkpoints) every this many updates
+    "checkpoint_dir": "checkpoints",  # latest.pt and best.pt go here
+    "stop_success": None,  # e.g. 0.99 to stop early once training is solved; None = never
+    "stop_patience": 3,  # ...for this many progress windows in a row
 }
 
 
@@ -255,6 +265,10 @@ def train(cfg):
     optimizer = torch.optim.Adam(policy.parameters(), lr=settings["lr"])
 
     n_updates = settings["total_steps"] // settings["rollout_steps"]
+    ckpt_dir = Path(settings["checkpoint_dir"])
+    ckpt_dir.mkdir(parents=True, exist_ok=True)
+    best = (-1.0, -np.inf)  # (success rate, reward/step) of the best window so far
+    windows_at_target = 0
     recent_successes = []
     for update in range(1, n_updates + 1):
         batch, obs, successes = collect_rollout(env, policy, obs, settings["rollout_steps"])
@@ -264,16 +278,33 @@ def train(cfg):
 
         if update % settings["log_every"] == 0 or update == n_updates:
             steps = update * settings["rollout_steps"]
+            reward = batch["reward"].mean().item()
             rate = np.mean(recent_successes) if recent_successes else float("nan")
             print(
-                f"steps {steps:>8} | reward/step {batch['reward'].mean():.3f} | "
+                f"steps {steps:>8} | reward/step {reward:.3f} | "
                 f"success {rate:.2f} ({len(recent_successes)} eps) | "
                 f"pi {losses['policy_loss']:.3f} v {losses['value_loss']:.3f} "
                 f"ent {losses['entropy']:.2f}"
             )
             recent_successes = []
 
+            torch.save(policy.state_dict(), ckpt_dir / "latest.pt")
+            if not np.isnan(rate) and (rate, reward) > best:  # ties broken by reward/step
+                best = (rate, reward)
+                torch.save(policy.state_dict(), ckpt_dir / "best.pt")
+
+            target = settings["stop_success"]
+            windows_at_target = windows_at_target + 1 if target and rate >= target else 0
+            if target and windows_at_target >= settings["stop_patience"]:
+                print(
+                    f"early stop: success >= {target} for {windows_at_target} windows in a row "
+                    f"(at {steps} steps)"
+                )
+                break
+
     torch.save(policy.state_dict(), "policy.pt")
+    if best[0] >= 0:
+        print(f"best: success {best[0]:.2f}, reward/step {best[1]:.3f} -> {ckpt_dir}/best.pt")
     env.close()
     return policy
 

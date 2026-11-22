@@ -387,3 +387,26 @@ def test_train_seeds_python_random(monkeypatch, tmp_path):
     second = train.train(cfg).state_dict()
 
     assert all(torch.equal(first[k], second[k]) for k in first)
+
+
+def test_checkpoints_and_early_stop(monkeypatch, tmp_path, capsys):
+    """Checkpoints are written, and stop_success ends training before total_steps."""
+    monkeypatch.setattr(train, "SwarmEnv", lambda cfg: FakeEnv())
+    monkeypatch.chdir(tmp_path)
+    cfg = {
+        "seed": 0,
+        "train": {
+            "total_steps": 200_000,
+            "rollout_steps": 100,
+            "lr": 3e-3,
+            "log_every": 20,
+            "stop_success": 0.9,
+            "stop_patience": 2,
+        },
+    }
+    train.train(cfg)
+    out = capsys.readouterr().out
+    assert "early stop" in out
+    assert "steps   200000" not in out  # stopped well before the budget
+    for name in ["checkpoints/latest.pt", "checkpoints/best.pt", "policy.pt"]:
+        assert (tmp_path / name).exists(), name

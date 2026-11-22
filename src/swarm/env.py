@@ -11,6 +11,8 @@ On reset it picks the start and target shapes:
            one robot per move, so every episode is solvable in at most K moves and K sets the
            difficulty. A walk that ends back on the start shape is thrown away and redone.
 Both are kept on the env (start_cells, target_cells) for logging and rendering.
+With episode.fixed_pair: true, the pair made on the first reset is reused for every later
+episode (a sanity check: can the policy learn even one fixed problem?).
 
 It builds each robot's observation:
   6 neighbour bits (hexgrid.DIRS order)
@@ -50,6 +52,8 @@ class SwarmEnv(ParallelEnv):
         self.max_steps = int(episode["max_steps"])
         self.k = int(episode["target_walk_steps"])
         self.start_shapes = list(episode.get("start_shapes", shapes.SHAPE_NAMES))
+        self.fixed_pair = bool(episode.get("fixed_pair", False))
+        self._fixed = None  # (start_name, start_cells, target_cells) once made, if fixed_pair
         if self.n < 2:
             raise ValueError("n_modules must be >= 2: a lone robot has no pivot and can't move")
         if self.k < 1:
@@ -102,12 +106,21 @@ class SwarmEnv(ParallelEnv):
     # --- episode -------------------------------------------------------------------------
 
     def reset(self, seed=None, options=None):
-        """Pick a start shape, make a target by random walk, and place the robots."""
+        """Pick a start shape, make a target by random walk, and place the robots.
+
+        With fixed_pair, only the first reset picks a pair (using its seed); later resets
+        reuse it, whatever seed they get.
+        """
         if seed is not None:
             self.rng = np.random.default_rng(seed)
-        self.start_name = self.start_shapes[self.rng.integers(len(self.start_shapes))]
-        self.start_cells = shapes.make_shape(self.start_name, self.n)
-        self.target_cells = self._random_walk_target(self.start_cells)
+        if self._fixed is not None:
+            self.start_name, self.start_cells, self.target_cells = self._fixed
+        else:
+            self.start_name = self.start_shapes[self.rng.integers(len(self.start_shapes))]
+            self.start_cells = shapes.make_shape(self.start_name, self.n)
+            self.target_cells = self._random_walk_target(self.start_cells)
+            if self.fixed_pair:
+                self._fixed = (self.start_name, self.start_cells, self.target_cells)
         self.sim.reset(self.start_cells, self.target_cells)
 
         self.t = 0

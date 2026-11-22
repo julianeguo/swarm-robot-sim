@@ -204,6 +204,25 @@ def test_isolation_penalty():
 # --- with train.py -------------------------------------------------------------------------
 
 
+def test_fixed_pair_reuses_the_first_pair():
+    env = SwarmEnv(_cfg(fixed_pair=True))
+    env.reset(seed=0)
+    start, target = env.start_cells.copy(), env.target_cells.copy()
+    for seed in [None, 1, 2, None]:
+        env.reset(seed=seed)
+        np.testing.assert_array_equal(env.start_cells, start)
+        np.testing.assert_array_equal(env.target_cells, target)
+
+    # Without the flag, the pair changes between episodes.
+    env = SwarmEnv(_cfg())
+    env.reset(seed=0)
+    pairs = set()
+    for _ in range(10):
+        env.reset()
+        pairs.add(tuple(map(tuple, env.target_cells.tolist())))
+    assert len(pairs) > 1
+
+
 def test_train_runs_on_real_env(monkeypatch, tmp_path):
     """A few PPO updates on the real env: the pieces fit together end to end."""
     pytest.importorskip("torch")

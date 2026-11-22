@@ -1,0 +1,10 @@
+# Sanity check: the debug_tiny setup, but every episode uses the same start/target pair.
+# If the policy can't learn to solve this one pair, something basic is broken
+# (reward, observation, movement rules, or the training code).
+inherits: debug_tiny.yaml
+
+episode:
+  fixed_pair: true
+
+train:
+  stop_success: 0.99   # this pair is learnable in ~25k steps; no need to run the full budget
