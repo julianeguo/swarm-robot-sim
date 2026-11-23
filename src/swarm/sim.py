@@ -107,13 +107,15 @@ class SwarmSim:
         Conflicts, since all robots move at the same time:
           * Several robots heading for the same empty cell: one of them, picked at random,
             moves there; the others stay where they are.
-          * A robot's pivot moving away in the same step is ignored: the pivot only has to be
-            there at the start of the step. A robot can end up with no neighbours; it then
-            can only stay until another robot comes next to it.
+          * A robot can't pivot around a robot that is also moving this step. A mover needs
+            at least one of its pivots (the occupied cells touching both it and its
+            destination) to have chosen "stay"; if every pivot is moving, it stays instead.
+            Without this rule, neighbours that pivot on each other both leave and drift
+            apart, until robots are alone with no pivot and can never move again.
 
         Returns an (N,) bool array: True for robots that actually moved.
         """
-        actions = np.asarray(actions, dtype=np.int64)
+        actions = np.array(actions, dtype=np.int64)  # a copy: blocked movers are set to 0
         if actions.shape != (self.n,):
             raise ValueError(f"expected {self.n} actions, got shape {actions.shape}")
         if ((actions < 0) | (actions >= N_ACTIONS)).any():
@@ -121,6 +123,16 @@ class SwarmSim:
         legal = self.legal_action_mask()[np.arange(self.n), actions]
         if not legal.all():
             raise ValueError(f"illegal actions for robots {np.flatnonzero(~legal).tolist()}")
+
+        # A mover whose pivots are all moving this step stays put instead.
+        staying = actions == 0
+        robot_at = {tuple(p): n for n, p in enumerate(self.positions.tolist())}
+        for n in np.flatnonzero(~staying):
+            d = actions[n] - 1
+            pivots = (self.positions[n] + hexgrid.DIRS[(d + s) % 6] for s in (-1, 1))
+            pivot_robots = (robot_at.get(tuple(q.tolist())) for q in pivots)
+            if not any(q is not None and staying[q] for q in pivot_robots):
+                actions[n] = 0
 
         # Visit the movers in random order; the first to claim a cell gets it.
         movers = np.flatnonzero(actions != 0).tolist()

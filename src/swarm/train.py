@@ -2,8 +2,9 @@
 Minimal masked IPPO training for the swarm (first working version).
 
 One small network is shared by every module. Each step, every module looks at its own
-observation, picks one of 7 actions (illegal ones masked out), and the whole team gets
-one shared reward. After a batch of steps we do a few PPO updates and print progress.
+observation, picks one of 7 actions (illegal ones masked out), and each module gets a
+reward: a team part shared by all, plus its own part for stepping onto or off the target.
+After a batch of steps we do a few PPO updates and print progress.
 
 Kept out on purpose for now (add later, one at a time, when needed):
 curriculum, evaluation runs, TensorBoard, checkpoints, minibatches, CNN encoder.
@@ -32,9 +33,10 @@ env is a PettingZoo ParallelEnv with a fixed number of modules N.
       "action_mask": 7 bools, True = legal (from sim.legal_action_mask())
   }
   actions[agent] = int in 0..6   (0 = stay, 1..6 = move toward hexgrid.DIRS[a - 1])
-  rewards[agent] = the team reward for this step, the same for every module: built from the
-                   change in sim.completion() over the step, scaled by the config `reward:`
-                   block (which also sets the time cost and the completion bonus)
+  rewards[agent] = this module's reward for the step: the team part (the same for every
+                   module: change in sim.filled(), time cost, completion bonus) plus its own
+                   part (+/- self_fill_scale for stepping onto / off a target cell). All
+                   scales come from the config `reward:` block. See env.py.
   infos[agent]["success"] = True if sim.completion() == 1.0 (set when the episode ends)
 
 An episode ends by termination (target completed) or truncation (max_steps). All modules end
@@ -185,8 +187,8 @@ def compute_advantages(batch, gamma, gae_lambda):
         gae        = delta + gamma * gae_lambda * not_done * gae
     returns = advantage + value   (what the critic should have predicted)
 
-    Every module gets the same reward but sees a different observation, so its value and
-    advantage differ. That's how one team reward becomes credit for each module.
+    Each module has its own reward row (team part + its own part) and its own observation,
+    so its value and advantage are worked out separately.
     Simplification: hitting max_steps is treated like a real ending (small bias, fine for now).
     """
     reward, value, done = batch["reward"], batch["value"], batch["done"]

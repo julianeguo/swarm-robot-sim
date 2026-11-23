@@ -1,7 +1,7 @@
 """
 Checks for the things most likely to break silently:
 hex neighbors and coordinate conversions, every shape having exactly N cells, pivot legality,
-and conflict resolution (two robots targeting one cell, a pivot robot moving away during the
+and conflict resolution (two robots targeting one cell, a robot whose pivot is moving in the
 same tick).
 """
 
@@ -155,25 +155,38 @@ def test_all_stay_changes_nothing():
 
 
 def test_two_robots_same_cell_one_random_winner():
-    # A at (1,0) and B at (0,1) pivot on each other into the empty origin:
+    # A at (1,0) and B at (0,1) both head for the empty origin:
     # A goes west (direction 3 -> action 4), B goes (0,-1) (direction 4 -> action 5).
+    # C at (1,-1) and D at (-1,1) stay, so each mover has a still pivot.
     winners = set()
     random.seed(0)
     for _ in range(50):
-        sim = _sim([[1, 0], [0, 1]])
-        moved = sim.apply_actions([4, 5])
+        sim = _sim([[1, 0], [0, 1], [1, -1], [-1, 1]])
+        moved = sim.apply_actions([4, 5, 0, 0])
         assert moved.sum() == 1  # exactly one gets the cell, the other stays
         assert _in_sync(sim)
         winners.add(int(np.flatnonzero(moved)[0]))
     assert winners == {0, 1}  # the tie-break is random, not always the same robot
 
 
-def test_moving_pivot_is_ignored():
-    # P at (0,0) pivots around Q into (0,1) while Q, pivoting around P, leaves to (1,-1).
-    # Different destinations, so both moves happen even though each lost its pivot.
+def test_moving_pivot_blocks_the_move():
+    # P at (0,0) wants to pivot around Q into (0,1) while Q, pivoting around P, wants to
+    # leave to (1,-1). Each one's only pivot is moving, so neither may move.
     sim = _sim([[0, 0], [1, 0]])
-    assert sim.apply_actions([2, 5]).tolist() == [True, True]
-    assert sim.positions.tolist() == [[0, 1], [1, -1]]
+    assert sim.apply_actions([2, 5]).tolist() == [False, False]
+    assert sim.positions.tolist() == [[0, 0], [1, 0]]
+    assert _in_sync(sim)
+
+
+def test_one_still_pivot_is_enough():
+    # P at (0,0) moves into (0,1). Its two pivots are Q at (1,0) and R at (-1,1).
+    # Q leaves this step (pivoting around P), but R stays, so P still moves.
+    sim = _sim([[0, 0], [1, 0], [-1, 1]])
+    actions = [2, 5, 0]
+    assert sim.legal_action_mask()[np.arange(3), actions].all()
+    moved = sim.apply_actions(actions)
+    assert moved[0] and not moved[2]
+    assert sim.positions[0].tolist() == [0, 1]
     assert _in_sync(sim)
 
 

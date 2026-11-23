@@ -28,6 +28,7 @@ CFG = {
         "time_cost_total": 0.5,
         "completion_bonus": 1.0,
         "isolation_penalty": 0.0,
+        "self_fill_scale": 0.0,
     },
 }
 
@@ -202,18 +203,41 @@ def test_undoing_the_walk_terminates_with_bonus():
 
 
 def test_isolation_penalty():
-    # Two robots side by side, each pivoting around the other, both moving away at once:
-    # (0,0) -> (0,1) and (1,0) -> (1,-1). They end up 2 apart, both with no neighbours.
-    env = SwarmEnv(_cfg(n_modules=2, start_shapes=["circle"], isolation_penalty=0.4))
+    # Three robots in a row: R (-1,0), P (0,0), Q (1,0). P pivots around Q (which stays)
+    # up into (0,1). R stays, but its only neighbour has left, so R is now alone.
+    env = SwarmEnv(_cfg(n_modules=3, start_shapes=["circle"], isolation_penalty=0.4))
     env.reset(seed=0)
-    assert env.sim.positions.tolist() == [[0, 0], [1, 0]]
+    assert env.sim.positions.tolist() == [[-1, 0], [0, 0], [1, 0]]
     filled = env.sim.filled()
-    _, rew, _, _, info = env.step({"module_0": 2, "module_1": 5})
-    assert info["module_0"]["isolated"] == 2
-    expected = (env.sim.filled() - filled) / 2 - 0.5 / env.max_steps - 0.4 * 2 / 2
-    if env.sim.filled() == 2:
+    _, rew, _, _, info = env.step({"module_0": 0, "module_1": 2, "module_2": 0})
+    assert env.sim.positions[1].tolist() == [0, 1]
+    assert info["module_0"]["isolated"] == 1
+    expected = (env.sim.filled() - filled) / 3 - 0.5 / env.max_steps - 0.4 * 1 / 3
+    if env.sim.filled() == 3:
         expected += 1.0
     assert rew["module_0"] == pytest.approx(expected)
+
+
+def test_own_reward_for_stepping_onto_or_off_target():
+    # Three robots in a row; the middle one pivots up into (0,1) each time. Over a few
+    # seeds the target differs, so that move sometimes takes it onto or off the target.
+    # Each robot's reward = team part + self_fill_scale * (on target after - before).
+    seen_change = False
+    for seed in range(30):
+        env = SwarmEnv(_cfg(n_modules=3, start_shapes=["circle"], self_fill_scale=0.7))
+        env.reset(seed=seed)
+        target = _cell_set(env.target_cells)
+        before = [tuple(p) in target for p in env.sim.positions.tolist()]
+        filled = env.sim.filled()
+        _, rew, _, _, _ = env.step({"module_0": 0, "module_1": 2, "module_2": 0})
+        after = [tuple(p) in target for p in env.sim.positions.tolist()]
+        team = (env.sim.filled() - filled) / 3 - 0.5 / env.max_steps
+        if env.sim.filled() == 3:
+            team += 1.0
+        for n, a in enumerate(env.possible_agents):
+            assert rew[a] == pytest.approx(team + 0.7 * (after[n] - before[n]))
+        seen_change |= before[1] != after[1]
+    assert seen_change  # the own part was actually exercised, not always 0
 
 
 # --- with train.py -------------------------------------------------------------------------

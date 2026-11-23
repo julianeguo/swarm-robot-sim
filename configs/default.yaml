@@ -21,6 +21,7 @@ reward:
   time_cost_total: 0.5     # per-step penalty is this divided by max_steps
   completion_bonus: 1.0
   isolation_penalty: 0.0   # per-step penalty is this * (robots with no neighbours) / n_modules
+  self_fill_scale: 1.0     # per robot: +this for stepping onto a target cell, -this for stepping off
 
 curriculum:
   enabled: true

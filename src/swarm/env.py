@@ -22,12 +22,18 @@ It builds each robot's observation:
 The 7 target bits repeat information that position + bitmap already contain, but in a form
 the network can use directly. Without them it has to learn to look its own position up in
 the bitmap, which it doesn't manage, and training collapses to "never move".
-passes along the action masks from sim.legal_action_mask(), and gives a team reward after
-every step:
+passes along the action masks from sim.legal_action_mask(), and gives each robot a reward
+after every step. The team part is the same for every robot:
   change in sim.filled() * fill_scale / N
   - time_cost_total / max_steps
   - isolation_penalty * (robots with no neighbours) / N
   + completion_bonus on the step the target is completed
+The robot's own part is different per robot:
+  + self_fill_scale if this robot stepped onto a target cell this step,
+    - self_fill_scale if it stepped off one, 0 otherwise
+With only the team part, one robot's good move is drowned out by what everyone else did
+that step, and with 8+ robots training collapses to "never move". The own part tells each
+robot directly whether its own move helped.
 An episode terminates when sim.completion() == 1.0 and truncates at episode.max_steps.
 """
 
@@ -67,6 +73,7 @@ class SwarmEnv(ParallelEnv):
         self.time_cost = float(reward.get("time_cost_total", 0.0)) / self.max_steps
         self.completion_bonus = float(reward.get("completion_bonus", 0.0))
         self.isolation_penalty = float(reward.get("isolation_penalty", 0.0))
+        self.self_fill_scale = float(reward.get("self_fill_scale", 0.0))
 
         # Sizes. A walk move takes one robot one step, so the target lies within
         # (largest start radius + K) of the origin. That is R, the target crop radius.
@@ -126,8 +133,10 @@ class SwarmEnv(ParallelEnv):
 
     def step(self, actions):
         """Apply one action per robot, all at once, and return the PettingZoo 5-tuple."""
+        on_target_before = self._is_target(self.sim.positions)
         self.sim.apply_actions([actions[a] for a in self.possible_agents])
         self.t += 1
+        own = self.self_fill_scale * (self._is_target(self.sim.positions) - on_target_before)
 
         filled = self.sim.filled()
         isolated = int((~self.sim.neighbor_occupancy().any(axis=1)).sum())
@@ -150,7 +159,7 @@ class SwarmEnv(ParallelEnv):
 
         return (
             self._observe(),
-            {a: reward for a in agents},
+            {a: reward + float(own[n]) for n, a in enumerate(self.possible_agents) if a in agents},
             {a: done for a in agents},
             {a: truncated for a in agents},
             {a: dict(info) for a in agents},

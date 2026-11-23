@@ -1,0 +1,11 @@
+# 8 robots. Same puzzle difficulty as debug_tiny (target = start after 3 random moves),
+# only the robot count changes, so this shows how training copes with more robots.
+inherits: default.yaml
+
+episode:
+  n_modules: 8
+  max_steps: 60
+  target_walk_steps: 3
+
+curriculum:
+  enabled: false

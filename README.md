@@ -5,8 +5,8 @@ controller trained with multi-agent deep RL so a lattice of connected modules
 can self-reconfigure from a starting shape into a target shape.
 
 One policy is shared by every module (parameter sharing / IPPO), each module
-acts on a local observation plus an action mask, and the team shares a single
-reward.
+acts on a local observation plus an action mask, and each module's reward is a
+shared team part plus its own part for stepping onto or off the target.
 
 ## Status
 to be updated
