@@ -230,3 +230,53 @@ def test_completion_matches_overlap_fraction():
     sim = SwarmSim(8)
     sim.reset(start, target)
     assert sim.completion() == pytest.approx(overlap_fraction(start, target))
+
+
+# --- keep_connected rules ------------------------------------------------------------------
+
+RING6 = hexgrid.DIRS.copy()  # 6 robots around an empty centre
+
+
+def test_keep_connected_forbids_splitting_moves():
+    line = np.array([[0, 0], [1, 0], [2, 0]])
+    old, new = SwarmSim(m=5), SwarmSim(m=5, keep_connected=True)
+    old.reset(line, line)
+    new.reset(line, line)
+    # The middle robot's two neighbours are on opposite sides: moving it would split the line.
+    assert old.legal_action_mask()[1, 1:].any()
+    assert not new.legal_action_mask()[1, 1:].any()
+    # The end robots have one neighbour each and may still move.
+    assert new.legal_action_mask()[0, 1:].any() and new.legal_action_mask()[2, 1:].any()
+
+
+def test_keep_connected_ring_is_locked():
+    sim = SwarmSim(m=5, keep_connected=True)
+    sim.reset(RING6, RING6)
+    assert not sim.legal_action_mask()[:, 1:].any()
+
+
+def test_neighbour_lock_lets_only_one_adjacent_robot_move():
+    start = np.array([[0, 0], [1, 0]])
+    actions = [2, 5]  # robot 0 -> direction 1, robot 1 -> direction 4: different cells
+    for seed in range(20):
+        random.seed(seed)
+        sim = SwarmSim(m=5, keep_connected=True)
+        sim.reset(start, start)
+        assert sim.legal_action_mask()[[0, 1], actions].all()
+        assert sim.apply_actions(actions).sum() == 1
+    old = SwarmSim(m=5)
+    old.reset(start, start)
+    assert old.apply_actions(actions).sum() == 2  # without the lock both move (and split)
+
+
+@pytest.mark.parametrize("shape", ["circle", "rectangle", "star"])
+def test_keep_connected_random_play_never_splits(shape):
+    random.seed(0)
+    rng = np.random.default_rng(0)
+    start = make_shape(shape, 12)
+    sim = SwarmSim(m=shape_radius(start) + 150, keep_connected=True)
+    sim.reset(start, start)
+    for _ in range(150):
+        mask = sim.legal_action_mask()
+        sim.apply_actions([rng.choice(np.flatnonzero(row)) for row in mask])
+        assert hexgrid.is_connected(sim.positions)

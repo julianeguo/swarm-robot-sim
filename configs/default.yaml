@@ -14,6 +14,11 @@ episode:
   target_walk_steps: 8
   # Each episode starts from one of these (names from shapes.SHAPE_NAMES), picked at random.
   start_shapes: [circle, rectangle, star]
+  # Local movement rules that keep the swarm in one piece (see sim.py). Off = the old rules,
+  # where the swarm splits apart and freezes within a few dozen steps.
+  keep_connected: true
+  # End the episode (as a failure) when no robot can move; see reward.freeze_penalty.
+  end_on_freeze: true
 
 reward:
   name: team_fill
@@ -21,6 +26,7 @@ reward:
   time_cost_total: 0.5     # per-step penalty is this divided by max_steps
   completion_bonus: 1.0
   isolation_penalty: 0.0   # per-step penalty is this * (robots with no neighbours) / n_modules
+  freeze_penalty: 0.5      # on a freeze: this + the time cost of the steps left
 
 curriculum:
   enabled: true

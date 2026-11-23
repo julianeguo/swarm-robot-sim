@@ -15,6 +15,14 @@ State (all kept in sync on every move):
 
 The board radius M is chosen by the caller (env.py, via hexgrid.board_radius) and stays fixed
 for the sim's lifetime, so every episode uses the same board size.
+
+keep_connected=True adds two local rules that together mean the swarm can never split:
+  * a robot may only move if its occupied neighbours form one unbroken run around its 6-cell
+    ring (so they stay connected to each other without it), checked in legal_action_mask
+  * two adjacent robots may not both move in the same step; one is picked at random and the
+    other stays (a neighbour lock), applied in apply_actions
+Proof sketch: every mover's old neighbours stay put and stay connected around it, and every
+mover lands next to its pivot, which is one of those stationary neighbours.
 """
 
 import random
@@ -27,9 +35,13 @@ N_ACTIONS = 7  # 0 = stay, 1..6 = move toward hexgrid.DIRS[a - 1] (same encoding
 
 
 class SwarmSim:
-    def __init__(self, m):
-        """Make an empty board of radius m. Call reset() before anything else."""
+    def __init__(self, m, keep_connected=False):
+        """Make an empty board of radius m. Call reset() before anything else.
+
+        keep_connected: use the connectivity-preserving rules described at the top of this file.
+        """
         self.m = int(m)
+        self.keep_connected = bool(keep_connected)
         size = 2 * self.m + 1
         self.positions = np.zeros((0, 2), dtype=np.int64)
         self.occupied = np.zeros((size, size), dtype=bool)
@@ -86,6 +98,8 @@ class SwarmSim:
              i.e. p + DIRS[d - 1] or p + DIRS[d + 1]. That robot is the pivot the mover
              rotates around (hexgrid.pivot_destination gives the same landing cell).
         If both of those cells are occupied, the move is still legal (no physical sweep check).
+        With keep_connected, also
+          3. the robot's occupied neighbours form exactly one unbroken run around its ring.
 
         This only looks at the current board. Two robots may both be allowed into the same
         cell here; apply_actions resolves that.
@@ -96,6 +110,10 @@ class SwarmSim:
         has_pivot = np.roll(occ, -1, axis=1) | np.roll(occ, 1, axis=1)
         mask = np.ones((self.n, N_ACTIONS), dtype=bool)
         mask[:, 1:] = ~occ & has_pivot
+        if self.keep_connected:
+            # A run starts wherever an occupied neighbour follows an empty one going round.
+            runs = (occ & ~np.roll(occ, 1, axis=1)).sum(axis=1)
+            mask[:, 1:] &= (runs == 1)[:, None]
         return mask
 
     def apply_actions(self, actions):
@@ -110,6 +128,8 @@ class SwarmSim:
           * A robot's pivot moving away in the same step is ignored: the pivot only has to be
             there at the start of the step. A robot can end up with no neighbours; it then
             can only stay until another robot comes next to it.
+          * With keep_connected, a mover next to a robot that already moved this step stays
+            put instead (neighbour lock), so the case above can't happen.
 
         Returns an (N,) bool array: True for robots that actually moved.
         """
@@ -127,11 +147,17 @@ class SwarmSim:
         random.shuffle(movers)
         moved = np.zeros(self.n, dtype=bool)
         claimed = set()
+        moved_from = set()  # old cells of robots that moved this step (for the neighbour lock)
         for n in movers:
             dest = self.positions[n] + hexgrid.DIRS[actions[n] - 1]
             if tuple(dest.tolist()) in claimed:
                 continue
+            if self.keep_connected and any(
+                tuple(nb) in moved_from for nb in hexgrid.neighbors(self.positions[n]).tolist()
+            ):
+                continue
             claimed.add(tuple(dest.tolist()))
+            moved_from.add(tuple(self.positions[n].tolist()))
             # The destination was empty at the start of the step (the mask checked it), and
             # no other robot has claimed it, so the write order here doesn't matter.
             old_r, old_c = hexgrid.to_index(self.positions[n], self.m)

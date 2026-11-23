@@ -223,6 +223,43 @@ def test_fixed_pair_reuses_the_first_pair():
     assert len(pairs) > 1
 
 
+def test_keep_connected_targets_are_connected():
+    env = SwarmEnv(_cfg(n_modules=9, target_walk_steps=8, keep_connected=True))
+    for seed in range(20):
+        env.reset(seed=seed)
+        assert hexgrid.is_connected(env.target_cells)
+
+
+def test_freeze_ends_episode_with_penalty():
+    cfg = _cfg(n_modules=6, keep_connected=True, end_on_freeze=True)
+    cfg["reward"]["freeze_penalty"] = 0.5
+    env = SwarmEnv(cfg)
+    env.reset(seed=0)
+    ring = hexgrid.DIRS.copy()  # locked under keep_connected: nobody can move
+    target = np.vstack([ring[:5], [[0, 0]]])  # differs from the ring, so not complete
+    env.sim.reset(ring, target)
+    env._filled = env.sim.filled()
+
+    _, rewards, terms, truncs, infos = env.step({a: 0 for a in env.possible_agents})
+    info = infos["module_0"]
+    assert all(terms.values()) and not any(truncs.values())
+    assert info["frozen"] and info["success"] is False
+    time_cost = 0.5 / env.max_steps
+    expected = -time_cost - time_cost * (env.max_steps - 1) - 0.5
+    assert rewards["module_0"] == pytest.approx(expected)
+    assert env.agents == []
+
+
+def test_no_freeze_ending_when_off():
+    env = SwarmEnv(_cfg(n_modules=6, keep_connected=True))
+    env.reset(seed=0)
+    ring = hexgrid.DIRS.copy()
+    env.sim.reset(ring, np.vstack([ring[:5], [[0, 0]]]))
+    env._filled = env.sim.filled()
+    _, _, terms, truncs, infos = env.step({a: 0 for a in env.possible_agents})
+    assert not any(terms.values()) and not infos["module_0"]["frozen"]
+
+
 def test_train_runs_on_real_env(monkeypatch, tmp_path):
     """A few PPO updates on the real env: the pieces fit together end to end."""
     pytest.importorskip("torch")

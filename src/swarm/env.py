@@ -25,7 +25,16 @@ every step:
   - time_cost_total / max_steps
   - isolation_penalty * (robots with no neighbours) / N
   + completion_bonus on the step the target is completed
+  - on a freeze (see below): the time cost of the remaining steps + freeze_penalty
 An episode terminates when sim.completion() == 1.0 and truncates at episode.max_steps.
+
+Options (episode block):
+  keep_connected: sim's connectivity-preserving movement rules (see sim.py). Targets are
+                  made under the same rules, so they stay solvable.
+  end_on_freeze:  also terminate (with success False) when no robot has a legal move. The
+                  board can never change again, so the rest of the episode would teach nothing.
+                  The penalty charges the time cost the episode would still have paid, so
+                  freezing on purpose is never cheaper than carrying on.
 """
 
 import numpy as np
@@ -53,6 +62,8 @@ class SwarmEnv(ParallelEnv):
         self.k = int(episode["target_walk_steps"])
         self.start_shapes = list(episode.get("start_shapes", shapes.SHAPE_NAMES))
         self.fixed_pair = bool(episode.get("fixed_pair", False))
+        self.keep_connected = bool(episode.get("keep_connected", False))
+        self.end_on_freeze = bool(episode.get("end_on_freeze", False))
         self._fixed = None  # (start_name, start_cells, target_cells) once made, if fixed_pair
         if self.n < 2:
             raise ValueError("n_modules must be >= 2: a lone robot has no pivot and can't move")
@@ -66,6 +77,7 @@ class SwarmEnv(ParallelEnv):
         self.time_cost = float(reward.get("time_cost_total", 0.0)) / self.max_steps
         self.completion_bonus = float(reward.get("completion_bonus", 0.0))
         self.isolation_penalty = float(reward.get("isolation_penalty", 0.0))
+        self.freeze_penalty = float(reward.get("freeze_penalty", 0.0))
 
         # Sizes. A walk move takes one robot one step, so the target lies within
         # (largest start radius + K) of the origin. That is R, the target crop radius.
@@ -73,7 +85,9 @@ class SwarmEnv(ParallelEnv):
         # lookup reads 1 cell further, which gives the board radius M.
         shape_r = max(shapes.shape_radius(shapes.make_shape(s, self.n)) for s in self.start_shapes)
         self.r = shape_r + self.k
-        self.sim = SwarmSim(hexgrid.board_radius(self.r, self.max_steps, 1))
+        self.sim = SwarmSim(
+            hexgrid.board_radius(self.r, self.max_steps, 1), keep_connected=self.keep_connected
+        )
         self.crop = hexgrid.window_offsets(self.r)  # (C, 2) target-bitmap cells, fixed order
         crop_idx = hexgrid.to_index(self.crop, self.sim.m)
         self._crop_rows, self._crop_cols = crop_idx[:, 0], crop_idx[:, 1]
@@ -147,19 +161,29 @@ class SwarmEnv(ParallelEnv):
             + (self.completion_bonus if done else 0.0)
         )
         self._filled = filled
-        truncated = not done and self.t >= self.max_steps
 
-        info = {"completion": filled / self.n, "isolated": isolated}
-        if done or truncated:
+        obs = self._observe()
+        frozen = (
+            self.end_on_freeze
+            and not done
+            and not any(o["action_mask"][1:].any() for o in obs.values())
+        )
+        if frozen:
+            reward -= self.time_cost * (self.max_steps - self.t) + self.freeze_penalty
+        terminated = done or frozen
+        truncated = not terminated and self.t >= self.max_steps
+
+        info = {"completion": filled / self.n, "isolated": isolated, "frozen": frozen}
+        if terminated or truncated:
             info["success"] = done
         agents = self.agents
-        if done or truncated:
+        if terminated or truncated:
             self.agents = []  # PettingZoo: no live agents once the episode is over
 
         return (
-            self._observe(),
+            obs,
             {a: reward for a in agents},
-            {a: done for a in agents},
+            {a: terminated for a in agents},
             {a: truncated for a in agents},
             {a: dict(info) for a in agents},
         )

@@ -1,0 +1,11 @@
+# Multi-step sanity check: exp_small (9 robots, target = start after 8 random moves),
+# but every episode uses the same start/target pair. Tests whether credit can flow back
+# across a solution that needs several steps, before we vary the pairs.
+inherits: exp_small.yaml
+
+episode:
+  fixed_pair: true
+
+train:
+  total_steps: 1_000_000
+  stop_success: 0.95
