@@ -260,6 +260,62 @@ def test_no_freeze_ending_when_off():
     assert not any(terms.values()) and not infos["module_0"]["frozen"]
 
 
+def test_reverse_curriculum_promotes_and_replays():
+    from swarm.env import ReverseCurriculum
+
+    cur = ReverseCurriculum([4, 1, 2], promote_success_rate=0.5, window_episodes=4)
+    assert cur.levels == [1, 2, 4] and cur.level == 1
+    for success in [True, False, False]:
+        cur.record(1, success)
+    assert cur.level == 1  # window not full yet
+    cur.record(2, True)  # other levels don't count
+    cur.record(1, True)
+    assert cur.level == 2 and len(cur.recent) == 0  # 2/4 >= 0.5: promoted, window reset
+    rng = np.random.default_rng(0)
+    assert {cur.sample(rng) for _ in range(200)} == {1, 2}  # mostly 2, some replays of 1
+    for _ in range(8):
+        cur.record(2, True)
+    assert cur.level == 4 and cur.at_final
+    for _ in range(8):
+        cur.record(4, True)
+    assert cur.level == 4 and cur.success_rate == 1.0  # tracked, but no level above
+
+
+def _cell_set(cells):
+    return set(map(tuple, np.asarray(cells).tolist()))
+
+
+def test_curriculum_level_one_is_one_move_from_target():
+    cfg = _cfg(n_modules=9, target_walk_steps=8, keep_connected=True)
+    cfg["curriculum"] = {"enabled": True, "levels": [1, 2, 4, 8, 16]}
+    env = SwarmEnv(cfg)
+    assert env.curriculum.levels == [1, 2, 4, 8]  # 16 > K is dropped
+    obs_size = env.observation_space("module_0")["observation"].shape[0]
+    for seed in range(20):
+        _, infos = env.reset(seed=seed)
+        assert infos["module_0"]["level"] == 1
+        start, target = _cell_set(env.start_cells), _cell_set(env.target_cells)
+        assert len(start - target) == 1  # exactly one robot is off the target
+        assert len(env._observe()["module_0"]["observation"]) == obs_size
+
+
+def test_curriculum_promotes_during_play():
+    cfg = _cfg(n_modules=4, keep_connected=True)
+    cfg["curriculum"] = {
+        "enabled": True,
+        "levels": [1, 2],
+        "window_episodes": 3,
+        "promote_success_rate": 0.0,
+    }
+    env = SwarmEnv(cfg)
+    env.reset(seed=0)
+    for _ in range(4):  # finish a few episodes by running out of time
+        while env.agents:
+            env.step({a: 0 for a in env.possible_agents})
+        env.reset()
+    assert env.curriculum.level == 2
+
+
 def test_train_runs_on_real_env(monkeypatch, tmp_path):
     """A few PPO updates on the real env: the pieces fit together end to end."""
     pytest.importorskip("torch")

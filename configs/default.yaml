@@ -29,9 +29,13 @@ reward:
   freeze_penalty: 0.5      # on a freeze: this + the time cost of the steps left
 
 curriculum:
-  enabled: true
-  levels: [2, 4, 8, 16, 32]   # successive values of episode.target_walk_steps
-  promote_success_rate: 0.8
+  enabled: false
+  # Reverse curriculum (see env.py): each episode starts `level` moves before the end of the
+  # random walk that made the target. Levels above target_walk_steps are dropped.
+  type: reverse
+  levels: [1, 2, 4, 8]
+  promote_success_rate: 0.8   # over the last window_episodes episodes at the current level
   window_episodes: 100
+  replay_easier: 0.2          # fraction of episodes replayed at an earlier level
 
 train: {}   # left untyped until the PPO milestone

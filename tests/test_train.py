@@ -154,7 +154,7 @@ def test_load_config_merges_inherited_file():
     assert cfg["seed"] == 0
     assert cfg["reward"]["completion_bonus"] == 1.0
     # Nested merge kept the siblings that only default sets in `curriculum:`.
-    assert cfg["curriculum"]["levels"] == [2, 4, 8, 16, 32]
+    assert cfg["curriculum"]["levels"] == [1, 2, 4, 8]
     # The `inherits` key itself is gone.
     assert "inherits" not in cfg
 

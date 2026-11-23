@@ -28,6 +28,14 @@ every step:
   - on a freeze (see below): the time cost of the remaining steps + freeze_penalty
 An episode terminates when sim.completion() == 1.0 and truncates at episode.max_steps.
 
+Reverse curriculum (curriculum block, enabled: true):
+  The random walk start -> target is recorded. Instead of starting each episode at the
+  beginning of the walk, start it j moves before the end, so at most j correct moves remain.
+  j (the level) starts at levels[0] and moves up to the next level once the success rate over
+  the last window_episodes episodes at the current level reaches promote_success_rate. A
+  fraction replay_easier of episodes uses an earlier level, so earlier skills aren't forgotten.
+  The target, and so the observation size, is the same at every level.
+
 Options (episode block):
   keep_connected: sim's connectivity-preserving movement rules (see sim.py). Targets are
                   made under the same rules, so they stay solvable.
@@ -37,6 +45,8 @@ Options (episode block):
                   freezing on purpose is never cheaper than carrying on.
 """
 
+from collections import deque
+
 import numpy as np
 from gymnasium import spaces
 from pettingzoo import ParallelEnv
@@ -45,6 +55,48 @@ from swarm import hexgrid, shapes
 from swarm.sim import N_ACTIONS, SwarmSim
 
 MAX_WALK_TRIES = 100  # redo a random walk that ends back on the start this many times at most
+
+
+class ReverseCurriculum:
+    """Which level (moves left before the target) each episode starts at, and promotion."""
+
+    def __init__(self, levels, promote_success_rate=0.8, window_episodes=100, replay_easier=0.2):
+        self.levels = sorted(int(j) for j in levels)
+        if not self.levels or self.levels[0] < 1:
+            raise ValueError("curriculum levels must be a non-empty list of ints >= 1")
+        self.promote_success_rate = float(promote_success_rate)
+        self.replay_easier = float(replay_easier)
+        self.index = 0
+        self.recent = deque(maxlen=int(window_episodes))
+
+    @property
+    def level(self):
+        return self.levels[self.index]
+
+    @property
+    def at_final(self):
+        return self.index == len(self.levels) - 1
+
+    def sample(self, rng):
+        """Level for the next episode: usually the current one, sometimes an earlier one."""
+        if self.index > 0 and rng.random() < self.replay_easier:
+            return self.levels[rng.integers(self.index)]
+        return self.level
+
+    @property
+    def success_rate(self):
+        """Success over the recent episodes at the current level (nan if none yet)."""
+        return float(np.mean(self.recent)) if self.recent else float("nan")
+
+    def record(self, level, success):
+        """Count an episode's result toward promotion (only episodes at the current level)."""
+        if level != self.level:
+            return
+        self.recent.append(bool(success))
+        full = len(self.recent) == self.recent.maxlen
+        if not self.at_final and full and self.success_rate >= self.promote_success_rate:
+            self.index += 1
+            self.recent.clear()
 
 
 class SwarmEnv(ParallelEnv):
@@ -104,6 +156,20 @@ class SwarmEnv(ParallelEnv):
         self._action_space = spaces.Discrete(N_ACTIONS)
 
         self.rng = np.random.default_rng(cfg.get("seed"))
+        cur = cfg.get("curriculum") or {}
+        self.curriculum = None
+        if cur.get("enabled"):
+            if cur.get("type", "reverse") != "reverse":
+                raise ValueError("only curriculum type 'reverse' is implemented")
+            levels = [j for j in cur.get("levels", [1, 2, 4, 8]) if j <= self.k]
+            self.curriculum = ReverseCurriculum(
+                levels or [self.k],
+                cur.get("promote_success_rate", 0.8),
+                cur.get("window_episodes", 100),
+                cur.get("replay_easier", 0.2),
+            )
+        self.level = None  # this episode's curriculum level (None without a curriculum)
+        self._walk = None  # positions after each move of the last random walk, start first
         self.t = 0
         self._filled = 0
         self.start_name = None
@@ -128,13 +194,23 @@ class SwarmEnv(ParallelEnv):
         if seed is not None:
             self.rng = np.random.default_rng(seed)
         if self._fixed is not None:
-            self.start_name, self.start_cells, self.target_cells = self._fixed
+            self.start_name, self.start_cells, self.target_cells, walk = self._fixed
         else:
             self.start_name = self.start_shapes[self.rng.integers(len(self.start_shapes))]
             self.start_cells = shapes.make_shape(self.start_name, self.n)
             self.target_cells = self._random_walk_target(self.start_cells)
+            walk = self._walk
             if self.fixed_pair:
-                self._fixed = (self.start_name, self.start_cells, self.target_cells)
+                self._fixed = (self.start_name, self.start_cells, self.target_cells, walk)
+        if self.curriculum is not None:
+            # Start j moves before the end of the walk (skipping back past any point that
+            # already equals the target, in case the walk undid itself near the end).
+            self.level = self.curriculum.sample(self.rng)
+            target_key = _cells_key(self.target_cells)
+            i = max(len(walk) - 1 - self.level, 0)
+            while i > 0 and _cells_key(walk[i]) == target_key:
+                i -= 1
+            self.start_cells = walk[i]
         self.sim.reset(self.start_cells, self.target_cells)
 
         self.t = 0
@@ -143,7 +219,11 @@ class SwarmEnv(ParallelEnv):
         # The target never changes during an episode, so its crop is read once here.
         self._target_bits = self.sim.target[self._crop_rows, self._crop_cols].astype(np.float32)
 
-        info = {"completion": self.sim.completion(), "start_shape": self.start_name}
+        info = {
+            "completion": self.sim.completion(),
+            "start_shape": self.start_name,
+            "level": self.level,
+        }
         return self._observe(), {a: dict(info) for a in self.agents}
 
     def step(self, actions):
@@ -173,9 +253,16 @@ class SwarmEnv(ParallelEnv):
         terminated = done or frozen
         truncated = not terminated and self.t >= self.max_steps
 
-        info = {"completion": filled / self.n, "isolated": isolated, "frozen": frozen}
+        info = {
+            "completion": filled / self.n,
+            "isolated": isolated,
+            "frozen": frozen,
+            "level": self.level,
+        }
         if terminated or truncated:
             info["success"] = done
+            if self.curriculum is not None:
+                self.curriculum.record(self.level, done)
         agents = self.agents
         if terminated or truncated:
             self.agents = []  # PettingZoo: no live agents once the episode is over
@@ -212,9 +299,11 @@ class SwarmEnv(ParallelEnv):
         can be undone, and the target is reachable from the start in at most K moves.
         If the walk ends with every start cell still filled (it undid itself), redo it.
         The sim is used as scratch space here; reset() places the robots again afterwards.
+        Every point along the walk (start first) is kept in self._walk for the curriculum.
         """
         for _ in range(MAX_WALK_TRIES):
             self.sim.reset(start, start)
+            self._walk = [self.sim.positions.copy()]
             for _ in range(self.k):
                 mask = self.sim.legal_action_mask()
                 movable = np.flatnonzero(mask[:, 1:].any(axis=1))
@@ -224,6 +313,12 @@ class SwarmEnv(ParallelEnv):
                 actions = np.zeros(self.n, dtype=np.int64)
                 actions[robot] = 1 + self.rng.choice(np.flatnonzero(mask[robot, 1:]))
                 self.sim.apply_actions(actions)
+                self._walk.append(self.sim.positions.copy())
             if self.sim.filled() < self.n:  # target == start means filled() == N
                 return self.sim.positions.copy()
         raise RuntimeError(f"random walk kept returning to the start ({MAX_WALK_TRIES} tries)")
+
+
+def _cells_key(cells):
+    """The set of occupied cells, ignoring which robot is where (for comparing shapes)."""
+    return frozenset(map(tuple, np.asarray(cells).tolist()))

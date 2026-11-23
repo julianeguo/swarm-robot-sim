@@ -1,0 +1,6 @@
+# Baseline for exp_small_curriculum.yaml: varied pairs at N=9, K=8, no curriculum.
+inherits: exp_small.yaml
+
+train:
+  total_steps: 2_000_000
+  stop_success: 0.9

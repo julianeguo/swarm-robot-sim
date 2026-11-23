@@ -1,0 +1,10 @@
+# Varied pairs at N=9, K=8 with the reverse curriculum: episodes start 1, then 2, 4, 8 moves
+# before the target. Compare against exp_small_varied.yaml (same, no curriculum).
+inherits: exp_small.yaml
+
+curriculum:
+  enabled: true
+
+train:
+  total_steps: 2_000_000
+  stop_success: 0.9

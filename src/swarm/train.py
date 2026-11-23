@@ -6,7 +6,11 @@ observation, picks one of 7 actions (illegal ones masked out), and the whole tea
 one shared reward. After a batch of steps we do a few PPO updates and print progress.
 
 Kept out on purpose for now (add later, one at a time, when needed):
-curriculum, evaluation runs, TensorBoard, minibatches, CNN encoder.
+evaluation runs, TensorBoard, minibatches, CNN encoder.
+
+Curriculum: env.py decides the level and when to move up (see SwarmEnv / ReverseCurriculum).
+train.py only shows the level, saves checkpoints/level_<j>.pt when a level is passed, and only
+allows early stopping once the final level is reached.
 
 Outputs (in the working directory):
   checkpoints/latest.pt  the weights at the most recent progress line
@@ -270,8 +274,13 @@ def train(cfg):
     best = (-1.0, -np.inf)  # (success rate, reward/step) of the best window so far
     windows_at_target = 0
     recent_successes = []
+    curriculum = getattr(env, "curriculum", None)
     for update in range(1, n_updates + 1):
+        level_before = curriculum.level if curriculum else None
         batch, obs, successes = collect_rollout(env, policy, obs, settings["rollout_steps"])
+        if curriculum and curriculum.level != level_before:
+            torch.save(policy.state_dict(), ckpt_dir / f"level_{level_before}.pt")
+            print(f"curriculum: passed level {level_before}, now level {curriculum.level}")
         advantages, returns = compute_advantages(batch, settings["gamma"], settings["gae_lambda"])
         losses = ppo_update(policy, optimizer, batch, advantages, returns, settings)
         recent_successes += successes
@@ -280,8 +289,11 @@ def train(cfg):
             steps = update * settings["rollout_steps"]
             reward = batch["reward"].mean().item()
             rate = np.mean(recent_successes) if recent_successes else float("nan")
+            level = ""
+            if curriculum:
+                level = f" | level {curriculum.level} ({curriculum.success_rate:.2f} at level)"
             print(
-                f"steps {steps:>8} | reward/step {reward:.3f} | "
+                f"steps {steps:>8}{level} | reward/step {reward:.3f} | "
                 f"success {rate:.2f} ({len(recent_successes)} eps) | "
                 f"pi {losses['policy_loss']:.3f} v {losses['value_loss']:.3f} "
                 f"ent {losses['entropy']:.2f}"
@@ -289,12 +301,18 @@ def train(cfg):
             recent_successes = []
 
             torch.save(policy.state_dict(), ckpt_dir / "latest.pt")
-            if not np.isnan(rate) and (rate, reward) > best:  # ties broken by reward/step
+            # Before the final level, success is measured on easier problems; don't let those
+            # count as "best" or toward early stopping.
+            final = curriculum is None or curriculum.at_final
+            if curriculum:
+                rate = curriculum.success_rate  # leave out the easier replayed episodes
+            if final and not np.isnan(rate) and (rate, reward) > best:  # ties: reward/step
                 best = (rate, reward)
                 torch.save(policy.state_dict(), ckpt_dir / "best.pt")
 
             target = settings["stop_success"]
-            windows_at_target = windows_at_target + 1 if target and rate >= target else 0
+            hit = final and target and rate >= target
+            windows_at_target = windows_at_target + 1 if hit else 0
             if target and windows_at_target >= settings["stop_patience"]:
                 print(
                     f"early stop: success >= {target} for {windows_at_target} windows in a row "
