@@ -21,7 +21,9 @@ env is a PettingZoo ParallelEnv with a fixed number of modules N.
 
   obs[agent] = {
       "observation": 1-D float array, the same length for every module:
-          6 neighbour bits (hexgrid.DIRS order)
+          6 neighbour bits (hexgrid.DIRS order): is a robot in that neighbouring cell?
+        + 1 on-target bit: is this module's own cell a target cell?
+        + 6 neighbour-target bits (hexgrid.DIRS order): is that neighbouring cell a target?
         + 2 numbers: position (i, j), divided by R
         + the target bitmap around the origin, radius R, flattened
           (R = largest start shape radius + K, the number of random-walk moves that make the

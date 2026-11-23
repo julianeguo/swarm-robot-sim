@@ -20,7 +20,7 @@ swarm-robot-sim/
 │   ├── hexgrid.py
 │   ├── shapes.py      # fixed shapes + bitmap conversion
 │   ├── sim.py
-│   ├── env.py         # obs = 6 neighbor bits + (i, j) position + target bitmap
+│   ├── env.py         # obs = 6 neighbor bits + 7 target bits + (i, j) position + target bitmap
 │   ├── train.py       # includes the policy network for now
 │   └── render.py      # pygame only
 ├── scripts/demo_random.py

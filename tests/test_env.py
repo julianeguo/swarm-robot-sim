@@ -66,27 +66,42 @@ def test_reset_observation_format():
     assert set(obs) == set(infos) == set(env.possible_agents)
     assert env.possible_agents == ["module_0", "module_1", "module_2", "module_3"]
     size = env.observation_space("module_0")["observation"].shape[0]
-    assert size == 6 + 2 + len(hexgrid.window_offsets(env.r))
+    assert size == 6 + 1 + 6 + 2 + len(hexgrid.window_offsets(env.r))
     for n, a in enumerate(env.possible_agents):
         assert obs[a]["observation"].shape == (size,)
         assert obs[a]["observation"].dtype == np.float32
         assert obs[a]["action_mask"].shape == (7,)
         assert env.observation_space(a).contains(obs[a])
-        # The layout train.py was told about: 6 neighbour bits, (i, j) / R, target bitmap.
+        # The layout train.py was told about: 6 neighbour bits, on-target bit,
+        # 6 neighbour-target bits, (i, j) / R, target bitmap.
         o = obs[a]["observation"]
         assert (o[:6] == env.sim.neighbor_occupancy()[n]).all()
-        assert np.allclose(o[6:8], env.sim.positions[n] / env.r)
-        assert o[8:].sum() == env.n  # all N target cells fit in the crop
+        assert np.allclose(o[13:15], env.sim.positions[n] / env.r)
+        assert o[15:].sum() == env.n  # all N target cells fit in the crop
+
+
+@pytest.mark.parametrize("seed", range(5))
+def test_target_bits_match_the_target(seed):
+    """Bit 6 = own cell is target, bits 7..12 = each neighbour cell is target (DIRS order)."""
+    env = SwarmEnv(CFG)
+    obs, _ = env.reset(seed=seed)
+    target = _cell_set(env.target_cells)
+    for n, a in enumerate(env.possible_agents):
+        o = obs[a]["observation"]
+        pos = tuple(env.sim.positions[n].tolist())
+        assert o[6] == (pos in target)
+        for k, nb in enumerate(hexgrid.neighbors(pos).tolist()):
+            assert o[7 + k] == (tuple(nb) in target)
 
 
 def test_target_bitmap_is_the_target_and_shared():
     env = SwarmEnv(CFG)
     obs, _ = env.reset(seed=3)
-    bits = obs["module_0"]["observation"][8:]
+    bits = obs["module_0"]["observation"][15:]
     in_crop = {tuple(c) for c, b in zip(env.crop.tolist(), bits, strict=True) if b}
     assert in_crop == _cell_set(env.target_cells)
     for a in env.possible_agents:  # every robot sees the same target
-        assert (obs[a]["observation"][8:] == bits).all()
+        assert (obs[a]["observation"][15:] == bits).all()
 
 
 # --- start and target ----------------------------------------------------------------------

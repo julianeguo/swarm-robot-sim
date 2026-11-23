@@ -121,16 +121,31 @@ def main():
                 f"episode {ep}: start={env.start_name} steps={t} "
                 f"completion={info.get('completion', 0.0):.2f} success={success}"
             )
+
+        print(f"solved {successes}/{args.episodes}")
+        if args.gif:
+            import imageio.v2 as imageio
+
+            imageio.mimsave(args.gif, frames, duration=1 / args.fps, loop=0)
+            print(f"saved {len(frames)} frames to {args.gif}")
+        if args.render:
+            wait_for_close(renderer)
     finally:
         if renderer is not None:
             renderer.close()
 
-    print(f"solved {successes}/{args.episodes}")
-    if args.gif:
-        import imageio.v2 as imageio
 
-        imageio.mimsave(args.gif, frames, duration=1 / args.fps, loop=0)
-        print(f"saved {len(frames)} frames to {args.gif}")
+def wait_for_close(renderer):
+    """Keep the window open on the last frame until the user closes it (or presses Esc / Q)."""
+    pg = renderer.pygame
+    print("done - close the window (or press Esc / Q) to exit")
+    while True:
+        for event in pg.event.get():
+            if event.type == pg.QUIT:
+                return
+            if event.type == pg.KEYDOWN and event.key in (pg.K_ESCAPE, pg.K_q):
+                return
+        renderer.clock.tick(30)  # check ~30 times a second without using a full CPU core
 
 
 if __name__ == "__main__":

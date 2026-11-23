@@ -13,10 +13,15 @@ On reset it picks the start and target shapes:
 Both are kept on the env (start_cells, target_cells) for logging and rendering.
 
 It builds each robot's observation:
-  6 neighbour bits (hexgrid.DIRS order)
+  6 neighbour bits (hexgrid.DIRS order): is a robot in that neighbouring cell?
+  + 1 on-target bit: is this robot's own cell a target cell?
+  + 6 neighbour-target bits (hexgrid.DIRS order): is that neighbouring cell a target cell?
   + 2 numbers: position (i, j), divided by R
   + the target bitmap around the origin, radius R, flattened in hexgrid.window_offsets order
   (R = largest start shape radius + K, so the crop always holds the whole target)
+The 7 target bits repeat information that position + bitmap already contain, but in a form
+the network can use directly. Without them it has to learn to look its own position up in
+the bitmap, which it doesn't manage, and training collapses to "never move".
 passes along the action masks from sim.legal_action_mask(), and gives a team reward after
 every step:
   change in sim.filled() * fill_scale / N
@@ -76,7 +81,7 @@ class SwarmEnv(ParallelEnv):
 
         self.possible_agents = [f"module_{n}" for n in range(self.n)]
         self.agents = []
-        obs_size = 6 + 2 + len(self.crop)
+        obs_size = 6 + 1 + 6 + 2 + len(self.crop)
         self._observation_space = spaces.Dict(
             {
                 "observation": spaces.Box(-np.inf, np.inf, (obs_size,), np.float32),
@@ -159,14 +164,21 @@ class SwarmEnv(ParallelEnv):
     def _observe(self):
         """Build {agent: {"observation", "action_mask"}} for every robot from the sim."""
         neighbours = self.sim.neighbor_occupancy().astype(np.float32)  # (N, 6)
+        on_target = self._is_target(self.sim.positions)[:, None]  # (N, 1)
+        nb_target = self._is_target(hexgrid.neighbors(self.sim.positions))  # (N, 6)
         position = self.sim.positions.astype(np.float32) / self.r  # (N, 2)
         target = np.broadcast_to(self._target_bits, (self.n, len(self._target_bits)))
-        obs = np.concatenate([neighbours, position, target], axis=1)
+        obs = np.concatenate([neighbours, on_target, nb_target, position, target], axis=1)
         mask = self.sim.legal_action_mask().astype(np.int8)  # gymnasium masks are int8
         return {
             a: {"observation": obs[n], "action_mask": mask[n]}
             for n, a in enumerate(self.possible_agents)
         }
+
+    def _is_target(self, cells):
+        """1.0 where a cell (..., 2) is a target cell, else 0.0, as float32 (...,)."""
+        idx = hexgrid.to_index(cells, self.sim.m)
+        return self.sim.target[idx[..., 0], idx[..., 1]].astype(np.float32)
 
     def _random_walk_target(self, start):
         """Return the start cells after K random legal moves, one robot moving per move.
