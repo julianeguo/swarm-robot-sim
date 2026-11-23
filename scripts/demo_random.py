@@ -26,7 +26,7 @@ VIEW_MARGIN = 2  # extra cells drawn around the target crop radius
 
 def parse_args():
     p = argparse.ArgumentParser(description="Watch random (or trained) robots reconfigure.")
-    p.add_argument("--config", default="configs/debug_tiny.yaml")
+    p.add_argument("--config", default="configs/default.yaml")
     p.add_argument("--steps", type=int, default=None,
                    help="max steps per episode (default: the config's episode.max_steps)")
     p.add_argument("--episodes", type=int, default=1)

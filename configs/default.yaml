@@ -7,7 +7,7 @@ grid:
   width: 24
 
 episode:
-  n_modules: 16
+  n_modules: 53
   max_steps: 200
   # K: the target shape is the start shape after this many random legal moves, one robot
   # per move. Guarantees the episode is solvable and acts as the difficulty dial.

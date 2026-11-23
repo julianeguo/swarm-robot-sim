@@ -108,10 +108,11 @@ def _build_shape(name, n, params):
     kwargs = dict(params)
 
     def sort_key(cell):
-        # Most important first: score, then distance, then angle (CCW from 0°). The extra
-        # keys break ties the same way every time. Distance makes a partly-filled
-        # rectangle edge fill from its middle outward. Rounding makes values that are
-        # equal on paper, but differ in the last float digit, tie.
+        # Most important first: score, then distance, then angle (CCW from 0°). Distance
+        # makes a partly-filled rectangle edge fill from its middle outward. Rounding makes
+        # values that are equal on paper, but differ in the last float digit, tie.
+        # Cells that tie on (score, distance) are not taken in angle order; see the
+        # balancing step in the loop below. Angle is only the last-resort tie-break.
         x, y = hexgrid.to_xy(cell)
         score = float(score_fn(x, y, **kwargs))
         dist = float(np.hypot(x, y))
@@ -122,12 +123,34 @@ def _build_shape(name, n, params):
     # heap so the lowest sort key comes out first. Whenever the plain "N lowest scores"
     # set is already connected, this picks exactly that set. It only differs when that
     # set would leave a loose cell, e.g. at a thin star tip.
+    #
+    # Balancing: when N stops partway through a ring of equally-scored cells (e.g. a
+    # circle with N=9 = 7-cell hexagon + 2 of the next 6), taking them in angle order
+    # would bunch the leftovers on one side. Instead, among the tied cells, take the one
+    # that keeps the shape's centre of mass closest to the origin, so leftovers go in
+    # opposite pairs and spread around the ring.
     origin = (0, 0)
     frontier = [(sort_key(origin), origin)]
     seen = {origin}
     chosen = []
+    sum_xy = np.zeros(2)  # running sum of chosen cells' (x, y), i.e. N * centre of mass
     while len(chosen) < n:
-        _, cell = heapq.heappop(frontier)
+        tied = [heapq.heappop(frontier)]
+        while frontier and frontier[0][0][:2] == tied[0][0][:2]:
+            tied.append(heapq.heappop(frontier))
+
+        pick = min(
+            tied,
+            key=lambda entry, s=sum_xy: (
+                round(float(np.hypot(*(s + hexgrid.to_xy(entry[1])))), 9),
+                entry[0],
+            ),
+        )
+        for entry in tied:
+            if entry is not pick:
+                heapq.heappush(frontier, entry)
+        cell = pick[1]
+        sum_xy += hexgrid.to_xy(cell)
         chosen.append(cell)
         for nb in hexgrid.neighbors(cell).tolist():
             nb = tuple(nb)
