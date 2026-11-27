@@ -16,6 +16,11 @@ State (all kept in sync on every move):
 The board radius M is chosen by the caller (env.py, via hexgrid.board_radius) and stays fixed
 for the sim's lifetime, so every episode uses the same board size.
 
+Movement is rotation: a robot swings 60 degrees around one occupied neighbour (its pivot), and
+its path sweeps toward the other cell that touches both its cell and the destination, so that
+cell must be empty. allow_squeeze=True drops that check (the original rule, kept so earlier
+runs can be reproduced): a robot may then pass between two occupied flanking cells.
+
 keep_connected=True adds two local rules that together mean the swarm can never split:
   * a robot may only move if its occupied neighbours form one unbroken run around its 6-cell
     ring (so they stay connected to each other without it), checked in legal_action_mask
@@ -35,13 +40,15 @@ N_ACTIONS = 7  # 0 = stay, 1..6 = move toward hexgrid.DIRS[a - 1] (same encoding
 
 
 class SwarmSim:
-    def __init__(self, m, keep_connected=False):
+    def __init__(self, m, keep_connected=False, allow_squeeze=False):
         """Make an empty board of radius m. Call reset() before anything else.
 
         keep_connected: use the connectivity-preserving rules described at the top of this file.
+        allow_squeeze: allow moves with both flanking cells occupied (no sweep check).
         """
         self.m = int(m)
         self.keep_connected = bool(keep_connected)
+        self.allow_squeeze = bool(allow_squeeze)
         size = 2 * self.m + 1
         self.positions = np.zeros((0, 2), dtype=np.int64)
         self.occupied = np.zeros((size, size), dtype=bool)
@@ -94,10 +101,11 @@ class SwarmSim:
 
         Moving in direction d is legal when
           1. the destination p + DIRS[d] is empty, and
-          2. at least one of the two cells touching both p and the destination is occupied,
-             i.e. p + DIRS[d - 1] or p + DIRS[d + 1]. That robot is the pivot the mover
-             rotates around (hexgrid.pivot_destination gives the same landing cell).
-        If both of those cells are occupied, the move is still legal (no physical sweep check).
+          2. exactly one of the two cells touching both p and the destination (the flanks,
+             p + DIRS[d - 1] and p + DIRS[d + 1]) is occupied. That robot is the pivot the mover
+             rotates around (hexgrid.pivot_destination gives the same landing cell); the other
+             flank is the cell its path sweeps through, so it must be empty.
+             With allow_squeeze, at least one flank occupied is enough.
         With keep_connected, also
           3. the robot's occupied neighbours form exactly one unbroken run around its ring.
 
@@ -107,7 +115,11 @@ class SwarmSim:
         occ = self.neighbor_occupancy()  # (N, 6): is neighbour k taken?
 
         # np.roll(occ, -1)[:, d] == occ[:, d + 1] and np.roll(occ, 1)[:, d] == occ[:, d - 1].
-        has_pivot = np.roll(occ, -1, axis=1) | np.roll(occ, 1, axis=1)
+        flank_ccw, flank_cw = np.roll(occ, -1, axis=1), np.roll(occ, 1, axis=1)
+        if self.allow_squeeze:
+            has_pivot = flank_ccw | flank_cw
+        else:
+            has_pivot = flank_ccw ^ flank_cw  # one pivot, and a clear sweep on the other side
         mask = np.ones((self.n, N_ACTIONS), dtype=bool)
         mask[:, 1:] = ~occ & has_pivot
         if self.keep_connected:

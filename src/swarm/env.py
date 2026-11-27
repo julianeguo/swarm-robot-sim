@@ -53,6 +53,8 @@ Global state for a centralized critic (training only; robots never see it):
   train.py feeds it to the critic only when train.critic is "central".
 
 Options (episode block):
+  allow_squeeze:  allow a move with both flanking cells occupied (no sweep check; the original
+                  rule, before 2026-11-27). Off by default (see sim.py).
   keep_connected: sim's connectivity-preserving movement rules (see sim.py). Targets are
                   made under the same rules, so they stay solvable.
   end_on_freeze:  also terminate (with success False) when no robot has a legal move. The
@@ -131,6 +133,7 @@ class SwarmEnv(ParallelEnv):
         self.start_shapes = list(episode.get("start_shapes", shapes.SHAPE_NAMES))
         self.fixed_pair = bool(episode.get("fixed_pair", False))
         self.keep_connected = bool(episode.get("keep_connected", False))
+        self.allow_squeeze = bool(episode.get("allow_squeeze", False))
         self.end_on_freeze = bool(episode.get("end_on_freeze", False))
         self._fixed = None  # (start_name, start_cells, target_cells) once made, if fixed_pair
         if self.n < 2:
@@ -163,7 +166,9 @@ class SwarmEnv(ParallelEnv):
         # The board must leave room for the farthest cell any robot reads.
         reach = self.window_radius if self.obs_type == "local" else 1
         self.sim = SwarmSim(
-            hexgrid.board_radius(self.r, self.max_steps, reach), keep_connected=self.keep_connected
+            hexgrid.board_radius(self.r, self.max_steps, reach),
+            keep_connected=self.keep_connected,
+            allow_squeeze=self.allow_squeeze,
         )
         self.window = hexgrid.window_offsets(self.window_radius)  # (W, 2), local obs only
         self.crop = hexgrid.window_offsets(self.r)  # (C, 2) target-bitmap cells, fixed order

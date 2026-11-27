@@ -22,10 +22,14 @@ the start shapes). Use the config the policy was trained with.
 |---|---|
 | `45d07dc` | `episode.fixed_pair` (reuse one start/target pair), `configs/debug_fixed.yaml`; train.py checkpoints (`checkpoints/latest.pt`, `best.pt`) and early stopping (`train.stop_success`, `stop_patience`) |
 | `907eea3` | `sim.keep_connected`: (1) a robot may move only if its occupied neighbours form one unbroken run around its 6-cell ring; (2) neighbour lock: two adjacent robots can't move in the same step (random winner). Together: the swarm can never split, using only local info. `episode.end_on_freeze` + `reward.freeze_penalty`: end the episode as a failure when no robot can move, charging the remaining time cost + penalty (so freezing is never cheaper than continuing). Both on in `default.yaml`. `configs/exp_small_fixed.yaml`. |
-| uncommitted (11-27) | `train.critic: central` (separate actor/critic; critic also gets `env.state()`: steps left, fill fraction, movable fraction, outside-crop fraction + occupancy crop; `actor.pt` saved). `observation.type: local` + `window_radius` (robot-centred target window, 6 + 37 = 43 inputs for any N, K). Resume support (`checkpoints/resume.pt`, `--resume`). Configs `exp_small_*_central.yaml`, `exp_small_curriculum_local.yaml`. 166 tests pass. |
+| this commit (11-27) | **Strict pivot rule is the default**: a move needs exactly one occupied flanking cell (the pivot); the other flank, which the rotation sweeps through, must be empty. `episode.allow_squeeze: true` restores the old rule. All runs 1–9 used the old rule. |
+| `2b0a562` | `train.critic: central` (separate actor/critic; critic also gets `env.state()`: steps left, fill fraction, movable fraction, outside-crop fraction + occupancy crop; `actor.pt` saved). `observation.type: local` + `window_radius` (robot-centred target window, 6 + 37 = 43 inputs for any N, K). Resume support (`checkpoints/resume.pt`, `--resume`). Configs `exp_small_*_central.yaml`, `exp_small_curriculum_local.yaml`. 166 tests pass. |
 | `c8e0227` | Reverse curriculum (`curriculum.enabled`, `ReverseCurriculum` in env.py): episodes start j moves before the end of the random walk that made the target; levels [1, 2, 4, 8]; promote at 80% over 100 episodes; 20% replay of easier levels; `checkpoints/level_<j>.pt` on promotion. `configs/exp_small_curriculum.yaml`, `configs/exp_small_varied.yaml`. 3 tests. 154 tests pass. |
 
 ## Experiment log
+
+Runs 1–9 used the **old movement rule** (squeezing between two occupied cells allowed).
+Run 10 onwards use the strict rule (the default since 11-27).
 
 | Run | Setup | Result | Takeaway |
 |---|---|---|---|
@@ -51,7 +55,29 @@ Evaluation of run 9's `best.pt` (300 fresh episodes per row, seeds never used in
 | N=25, K=8 (unseen N) | 0.0% | 6.3% | 21.3% | 29.7% |
 
 Trained policies never froze (random play freezes 24% at N=16). Avg completion stays 0.82–0.99
-even at N=25. Median solve 7–19 steps.
+even at N=25. Median solve 7–19 steps. (Old rule: 15.6% of these policies' moves squeezed
+between two occupied cells, which a rotating module can't do. That's why the strict rule was added.)
+
+| Run | Setup | Result | Takeaway |
+|---|---|---|---|
+| 10 | run 9 under the **strict rule**, seeds 0–2 (`runs/2026-11-27_strict_local_seed*`) | **3/3 reach the full task**: levels 1→8 by 64–82k steps; ≥90% at final level by 110–236k | the window result holds under realistic movement |
+
+Evaluation of run 10's `best.pt` (strict rule; 300 fresh episodes per row; shape-to-shape is
+50 tries per ordered pair of circle/rectangle/star). Ranges are over the 3 seeds:
+
+| Test | Random | Strict (run 10) | Old rule (run 9), for reference |
+|---|---|---|---|
+| N=9, K=8 (trained) | 0.0% | 81–87% | 87–89% |
+| N=9, K=16 | 1.0% | 74–84% | 87–90% |
+| N=4, K=3 | 22.7% | 99–100% | 99.7% |
+| N=16, K=8 (never trained) | 0.0% | 26–38% | 49–68% |
+| N=25, K=8 (never trained) | 0.0% | 4–14% | 6–30% |
+| Shape-to-shape, N=9 | 0–2% | **94–100% on every pair** | 54–100% |
+| Shape-to-shape, N=16 (never trained) | 0% | 4–94%, mostly 20–80% | 0–66%, mostly <15% |
+
+Under the strict rule: 0 of 188k moves squeezed; random-walk targets got a bit harder (fewer legal
+moves), real shape-to-shape changes got clearly better (hypothesis, untested: the tighter movement
+forces habits that carry over). Random play freezes less at N=16 (22% → 8%).
 
 Key measurements:
 - Old rules, random play: swarm split in 98–100% of episodes (step 1); full freeze in 96–100%,

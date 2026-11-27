@@ -97,15 +97,21 @@ def test_two_robots():
     assert mask[1].tolist() == [True, False, False, True, False, True, False]
 
 
-def test_both_flanks_occupied_is_still_legal():
-    # P with robots at (0,1) and (1,-1): east (1,0) touches both. Simple rule: legal.
+def test_both_flanks_occupied_is_illegal():
+    # P with robots at (0,1) and (1,-1): east (1,0) touches both. Rotating around either one
+    # would sweep through the other, so the move is illegal.
     mask = _mask([[0, 0], [0, 1], [1, -1]])
-    assert mask[0, 1]
+    assert not mask[0, 1]
+    # With allow_squeeze (the original rule) it is legal.
+    sim = SwarmSim(4, allow_squeeze=True)
+    sim.reset([[0, 0], [0, 1], [1, -1]], [[0, 0], [0, 1], [1, -1]])
+    assert sim.legal_action_mask()[0, 1]
 
 
 def test_mask_matches_pivot_destination():
     # Independent check: move d is legal iff the destination is empty and some occupied
-    # neighbour, rotated around CW or CCW, lands the robot exactly there.
+    # neighbour k, rotated around CW or CCW, lands the robot exactly there with the swept cell
+    # (the other flank, direction 2d - k) empty.
     sim = SwarmSim(8)
     cells = make_shape("star", 30)
     sim.reset(cells, cells)
@@ -118,6 +124,7 @@ def test_mask_matches_pivot_destination():
                 tuple(hexgrid.pivot_destination(p, k, rot).tolist()) == dest
                 for k in range(6)
                 if tuple((p + hexgrid.DIRS[k]).tolist()) in taken
+                and tuple((p + hexgrid.DIRS[(2 * d - k) % 6]).tolist()) not in taken
                 for rot in (hexgrid.CCW, hexgrid.CW)
             )
             assert mask[n, d + 1] == (dest not in taken and reachable), (n, d)

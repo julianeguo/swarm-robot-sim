@@ -17,6 +17,9 @@ episode:
   # Local movement rules that keep the swarm in one piece (see sim.py). Off = the old rules,
   # where the swarm splits apart and freezes within a few dozen steps.
   keep_connected: true
+  # Rotation needs the far flanking cell empty. true = the old rule (squeezing between two
+  # occupied cells allowed), used by all runs before 2026-11-27.
+  allow_squeeze: false
   # End the episode (as a failure) when no robot can move; see reward.freeze_penalty.
   end_on_freeze: true
 
