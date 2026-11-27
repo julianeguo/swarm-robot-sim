@@ -50,7 +50,10 @@ def make_chooser(env, policy_path, rng):
 
     from swarm.train import DEFAULTS, Policy, _stack_obs
 
+    # Any of policy.pt / actor.pt / checkpoints/*.pt: keep only the actor's weights (a central
+    # critic's weights are training-only and aren't needed to act).
     state = torch.load(policy_path, map_location="cpu")
+    state = {k: v for k, v in state.items() if k.startswith(("body.", "actor."))}
     obs_size = env.observation_space(agents[0])["observation"].shape[0]
     hidden = state["body.0.weight"].shape[0]  # read the width back from the saved weights
     if state["body.0.weight"].shape[1] != obs_size:
@@ -59,7 +62,9 @@ def make_chooser(env, policy_path, rng):
             f"this config gives {obs_size}; use the config it was trained on"
         )
     policy = Policy(obs_size, hidden or DEFAULTS["hidden"])
-    policy.load_state_dict(state)
+    missing, _ = policy.load_state_dict(state, strict=False)
+    if any(k.startswith(("body.", "actor.")) for k in missing):
+        raise SystemExit(f"{policy_path} is missing actor weights: {missing}")
     policy.eval()
 
     def policy_actions(obs):

@@ -20,6 +20,12 @@ episode:
   # End the episode (as a failure) when no robot can move; see reward.freeze_penalty.
   end_on_freeze: true
 
+observation:
+  # "global": neighbour bits + position + whole target map (size depends on N and K).
+  # "local": neighbour bits + target bits in a window centred on the robot (fixed size).
+  type: global
+  window_radius: 3   # local only: 37 cells
+
 reward:
   name: team_fill
   fill_scale: 1.0          # delta(filled targets) * fill_scale / n_modules

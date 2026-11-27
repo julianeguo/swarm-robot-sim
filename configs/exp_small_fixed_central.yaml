@@ -1,0 +1,5 @@
+# Same as exp_small_fixed.yaml, but the critic also sees the global state (training only).
+inherits: exp_small_fixed.yaml
+
+train:
+  critic: central

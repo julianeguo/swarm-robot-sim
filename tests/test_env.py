@@ -316,6 +316,109 @@ def test_curriculum_promotes_during_play():
     assert env.curriculum.level == 2
 
 
+def test_state_vector():
+    env = SwarmEnv(_cfg(n_modules=9, target_walk_steps=8, keep_connected=True))
+    env.reset(seed=0)
+    state = env.state()
+    assert state.shape == env.state_space.shape and state.dtype == np.float32
+    steps_left, filled, can_move, outside = state[:4]
+    assert steps_left == 1.0
+    assert filled == pytest.approx(env.sim.filled() / env.n)
+    assert 0 < can_move <= 1 and outside == 0
+    assert state[4:].sum() == env.n  # every robot is in the crop at the start
+
+    env.step({a: 0 for a in env.possible_agents})
+    assert env.state()[0] == pytest.approx(1 - 1 / env.max_steps)
+
+
+def test_train_runs_with_central_critic(monkeypatch, tmp_path):
+    pytest.importorskip("torch")
+    import torch
+
+    from swarm import train
+
+    monkeypatch.chdir(tmp_path)
+    cfg = {**CFG, "train": {"total_steps": 400, "rollout_steps": 100, "critic": "central"}}
+    policy = train.train(cfg)
+    assert isinstance(policy, train.CentralCriticPolicy)
+    actor = torch.load(tmp_path / "actor.pt")
+    assert actor and all(k.startswith(("body.", "actor.")) for k in actor)
+
+
+def _local_cfg(**kw):
+    cfg = _cfg(keep_connected=True, **kw)
+    cfg["observation"] = {"type": "local", "window_radius": 3}
+    return cfg
+
+
+def test_local_observation_is_the_window_around_each_robot():
+    env = SwarmEnv(_local_cfg(n_modules=9, target_walk_steps=8))
+    obs, _ = env.reset(seed=0)
+    offsets = hexgrid.window_offsets(3)
+    centre = int(np.flatnonzero((offsets == 0).all(axis=1))[0])
+    target = {tuple(c) for c in env.target_cells.tolist()}
+    for n, agent in enumerate(env.possible_agents):
+        o = obs[agent]["observation"]
+        assert o.shape == (6 + 37,)
+        np.testing.assert_array_equal(o[:6], env.sim.neighbor_occupancy()[n])
+        pos = env.sim.positions[n]
+        expected = [tuple((pos + d).tolist()) in target for d in offsets]
+        np.testing.assert_array_equal(o[6:], np.array(expected, dtype=np.float32))
+        assert o[6 + centre] == (tuple(pos.tolist()) in target)  # "my cell is a target"
+
+
+def test_local_observation_size_is_the_same_for_any_n_and_k():
+    sizes = set()
+    for n, k in [(4, 3), (9, 8), (16, 8), (16, 16)]:
+        env = SwarmEnv(_local_cfg(n_modules=n, target_walk_steps=k))
+        sizes.add(env.observation_space("module_0")["observation"].shape)
+        obs, _ = env.reset(seed=0)
+        assert obs["module_0"]["observation"].shape == (43,)
+    assert sizes == {(43,)}
+
+
+def test_local_observation_passes_pettingzoo_api():
+    parallel_api_test(SwarmEnv(_local_cfg()), num_cycles=50)
+
+
+def test_bad_observation_type_raises():
+    cfg = _cfg()
+    cfg["observation"] = {"type": "cnn"}
+    with pytest.raises(ValueError):
+        SwarmEnv(cfg)
+
+
+def test_resume_restores_curriculum_level(monkeypatch, tmp_path):
+    pytest.importorskip("torch")
+    import torch
+
+    from swarm import train
+
+    monkeypatch.chdir(tmp_path)
+    cfg = _cfg(keep_connected=True)
+    cfg["curriculum"] = {
+        "enabled": True,
+        "levels": [1, 2],
+        "window_episodes": 3,
+        "promote_success_rate": 0.0,
+    }  # promotes after 3 episodes
+    cfg["train"] = {"total_steps": 400, "rollout_steps": 100, "log_every": 1}
+    train.train(cfg)
+    saved = torch.load(tmp_path / "checkpoints/resume.pt", weights_only=False)
+    assert saved["curriculum"]["index"] == 1  # reached level 2
+
+    seen = {}
+    real_env = train.SwarmEnv
+
+    def spy(c):
+        seen["env"] = real_env(c)
+        return seen["env"]
+
+    monkeypatch.setattr(train, "SwarmEnv", spy)
+    train.train(cfg, resume=tmp_path / "checkpoints/resume.pt")
+    assert seen["env"].curriculum.level == 2
+
+
 def test_train_runs_on_real_env(monkeypatch, tmp_path):
     """A few PPO updates on the real env: the pieces fit together end to end."""
     pytest.importorskip("torch")

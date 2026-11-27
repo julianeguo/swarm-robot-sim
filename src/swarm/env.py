@@ -14,11 +14,20 @@ Both are kept on the env (start_cells, target_cells) for logging and rendering.
 With episode.fixed_pair: true, the pair made on the first reset is reused for every later
 episode (a sanity check: can the policy learn even one fixed problem?).
 
-It builds each robot's observation:
-  6 neighbour bits (hexgrid.DIRS order)
-  + 2 numbers: position (i, j), divided by R
-  + the target bitmap around the origin, radius R, flattened in hexgrid.window_offsets order
-  (R = largest start shape radius + K, so the crop always holds the whole target)
+It builds each robot's observation, in one of two layouts (observation.type in the config):
+  "global" (default, the original):
+    6 neighbour bits (hexgrid.DIRS order)
+    + 2 numbers: position (i, j), divided by R
+    + the target bitmap around the origin, radius R, flattened in hexgrid.window_offsets order
+    (R = largest start shape radius + K, so the crop always holds the whole target)
+    Size depends on N and K.
+  "local" (robot-centred):
+    6 neighbour bits
+    + the target bits in a window of radius observation.window_radius (default 3) centred
+      on the robot, in hexgrid.window_offsets order (the centre entry = "my cell is a target")
+    Size 6 + 1 + 3w(w+1) (43 for w = 3), the same for any N and K. Information model: each
+    robot stores the target (given at the start) and knows its own swarm-frame position, and
+    looks the window up itself. The position is needed for that lookup but isn't an input.
 passes along the action masks from sim.legal_action_mask(), and gives a team reward after
 every step:
   change in sim.filled() * fill_scale / N
@@ -35,6 +44,13 @@ Reverse curriculum (curriculum block, enabled: true):
   the last window_episodes episodes at the current level reaches promote_success_rate. A
   fraction replay_easier of episodes uses an earlier level, so earlier skills aren't forgotten.
   The target, and so the observation size, is the same at every level.
+
+Global state for a centralized critic (training only; robots never see it):
+  env.state() returns one vector shared by all robots:
+    [steps left / max_steps, fraction of target filled, fraction of robots that can move,
+     fraction of robots outside the crop] + occupancy of the target-crop cells (where every
+     robot is, in the same cell order as the target bitmap)
+  train.py feeds it to the critic only when train.critic is "central".
 
 Options (episode block):
   keep_connected: sim's connectivity-preserving movement rules (see sim.py). Targets are
@@ -137,16 +153,29 @@ class SwarmEnv(ParallelEnv):
         # lookup reads 1 cell further, which gives the board radius M.
         shape_r = max(shapes.shape_radius(shapes.make_shape(s, self.n)) for s in self.start_shapes)
         self.r = shape_r + self.k
+        obs_cfg = cfg.get("observation") or {}
+        self.obs_type = obs_cfg.get("type", "global")
+        if self.obs_type not in ("global", "local"):
+            raise ValueError(f"observation.type must be 'global' or 'local', got {self.obs_type!r}")
+        self.window_radius = int(obs_cfg.get("window_radius", 3))
+        if self.obs_type == "local" and self.window_radius < 1:
+            raise ValueError("observation.window_radius must be >= 1")
+        # The board must leave room for the farthest cell any robot reads.
+        reach = self.window_radius if self.obs_type == "local" else 1
         self.sim = SwarmSim(
-            hexgrid.board_radius(self.r, self.max_steps, 1), keep_connected=self.keep_connected
+            hexgrid.board_radius(self.r, self.max_steps, reach), keep_connected=self.keep_connected
         )
+        self.window = hexgrid.window_offsets(self.window_radius)  # (W, 2), local obs only
         self.crop = hexgrid.window_offsets(self.r)  # (C, 2) target-bitmap cells, fixed order
         crop_idx = hexgrid.to_index(self.crop, self.sim.m)
         self._crop_rows, self._crop_cols = crop_idx[:, 0], crop_idx[:, 1]
 
         self.possible_agents = [f"module_{n}" for n in range(self.n)]
         self.agents = []
-        obs_size = 6 + 2 + len(self.crop)
+        if self.obs_type == "local":
+            obs_size = 6 + len(self.window)
+        else:
+            obs_size = 6 + 2 + len(self.crop)
         self._observation_space = spaces.Dict(
             {
                 "observation": spaces.Box(-np.inf, np.inf, (obs_size,), np.float32),
@@ -154,6 +183,7 @@ class SwarmEnv(ParallelEnv):
             }
         )
         self._action_space = spaces.Discrete(N_ACTIONS)
+        self.state_space = spaces.Box(0.0, 1.0, (4 + len(self.crop),), np.float32)
 
         self.rng = np.random.default_rng(cfg.get("seed"))
         cur = cfg.get("curriculum") or {}
@@ -278,14 +308,36 @@ class SwarmEnv(ParallelEnv):
     def close(self):
         pass
 
+    def state(self):
+        """The global state vector for a centralized critic (see the top of this file).
+
+        Training-only information: the actor must never be given this.
+        """
+        occ = self.sim.occupied[self._crop_rows, self._crop_cols].astype(np.float32)
+        n = max(self.sim.n, 1)
+        can_move = self.sim.legal_action_mask()[:, 1:].any(axis=1).sum() if self.sim.n else 0
+        scalars = [
+            (self.max_steps - self.t) / self.max_steps,
+            self.sim.filled() / n,
+            can_move / n,
+            1.0 - occ.sum() / n,  # robots outside the crop
+        ]
+        return np.concatenate([np.asarray(scalars, dtype=np.float32), occ])
+
     # --- helpers -------------------------------------------------------------------------
 
     def _observe(self):
         """Build {agent: {"observation", "action_mask"}} for every robot from the sim."""
         neighbours = self.sim.neighbor_occupancy().astype(np.float32)  # (N, 6)
-        position = self.sim.positions.astype(np.float32) / self.r  # (N, 2)
-        target = np.broadcast_to(self._target_bits, (self.n, len(self._target_bits)))
-        obs = np.concatenate([neighbours, position, target], axis=1)
+        if self.obs_type == "local":
+            cells = self.sim.positions[:, None, :] + self.window[None, :, :]  # (N, W, 2)
+            idx = hexgrid.to_index(cells, self.sim.m)
+            window = self.sim.target[idx[..., 0], idx[..., 1]].astype(np.float32)  # (N, W)
+            obs = np.concatenate([neighbours, window], axis=1)
+        else:
+            position = self.sim.positions.astype(np.float32) / self.r  # (N, 2)
+            target = np.broadcast_to(self._target_bits, (self.n, len(self._target_bits)))
+            obs = np.concatenate([neighbours, position, target], axis=1)
         mask = self.sim.legal_action_mask().astype(np.int8)  # gymnasium masks are int8
         return {
             a: {"observation": obs[n], "action_mask": mask[n]}

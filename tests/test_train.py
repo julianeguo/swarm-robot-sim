@@ -410,3 +410,77 @@ def test_checkpoints_and_early_stop(monkeypatch, tmp_path, capsys):
     assert "steps   200000" not in out  # stopped well before the budget
     for name in ["checkpoints/latest.pt", "checkpoints/best.pt", "policy.pt"]:
         assert (tmp_path / name).exists(), name
+
+
+# --- central critic ------------------------------------------------------------------------
+
+
+def test_central_critic_actor_never_sees_state():
+    """Changing the global state changes the value but never the action probabilities."""
+    torch.manual_seed(0)
+    policy = train.CentralCriticPolicy(obs_size=10, state_size=4, hidden=16)
+    obs, mask = torch.randn(5, 10), torch.ones(5, 7, dtype=torch.bool)
+    dist_a, value_a = policy(obs, mask, torch.zeros(5, 4))
+    dist_b, value_b = policy(obs, mask, torch.ones(5, 4))
+    assert torch.equal(dist_a.probs, dist_b.probs)
+    assert not torch.allclose(value_a, value_b)
+
+
+def test_actor_weights_load_into_plain_policy():
+    """The deployed actor is just body.* + actor.*, and acts identically in a plain Policy."""
+    torch.manual_seed(0)
+    central = train.CentralCriticPolicy(obs_size=10, state_size=4, hidden=16)
+    weights = train.actor_weights(central)
+    assert all(k.startswith(("body.", "actor.")) for k in weights)
+    plain = train.Policy(obs_size=10, hidden=16)
+    plain.load_state_dict(weights, strict=False)
+    obs, mask = torch.randn(5, 10), torch.ones(5, 7, dtype=torch.bool)
+    assert torch.allclose(plain(obs, mask)[0].probs, central(obs, mask, torch.zeros(5, 4))[0].probs)
+
+
+# --- resume --------------------------------------------------------------------------------
+
+
+def _resume_cfg(total_steps):
+    return {
+        "seed": 0,
+        "train": {"total_steps": total_steps, "rollout_steps": 100, "log_every": 2},
+    }
+
+
+def test_resume_continues_from_saved_update(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(train, "SwarmEnv", lambda cfg: FakeEnv())
+    monkeypatch.chdir(tmp_path)
+    train.train(_resume_cfg(1000))
+    saved = torch.load(tmp_path / "checkpoints/resume.pt", weights_only=False)
+    assert saved["update"] == 10
+    capsys.readouterr()
+
+    train.train(_resume_cfg(2000), resume=tmp_path / "checkpoints/resume.pt")  # extend the run
+    out = capsys.readouterr().out
+    assert "resumed from" in out and "at step 1000" in out
+    assert "steps     1200" in out and "steps     2000" in out
+    assert "steps      200 " not in out  # didn't start over
+    assert torch.load(tmp_path / "checkpoints/resume.pt", weights_only=False)["update"] == 20
+
+
+def test_resume_restores_weights_and_optimizer(monkeypatch, tmp_path):
+    monkeypatch.setattr(train, "SwarmEnv", lambda cfg: FakeEnv())
+    monkeypatch.chdir(tmp_path)
+    train.train(_resume_cfg(600))
+    saved = torch.load(tmp_path / "checkpoints/resume.pt", weights_only=False)
+    # Same total_steps: nothing left to train, so the returned policy is exactly the saved one.
+    policy = train.train(_resume_cfg(600), resume=tmp_path / "checkpoints/resume.pt")
+    for k, v in saved["policy"].items():
+        assert torch.equal(policy.state_dict()[k], v), k
+    assert saved["optimizer"]["state"]  # Adam's running averages were saved
+
+
+def test_resume_refuses_a_different_config(monkeypatch, tmp_path):
+    monkeypatch.setattr(train, "SwarmEnv", lambda cfg: FakeEnv())
+    monkeypatch.chdir(tmp_path)
+    train.train(_resume_cfg(400))
+    other = _resume_cfg(400)
+    other["train"]["lr"] = 1e-2
+    with pytest.raises(ValueError, match="differs"):
+        train.train(other, resume=tmp_path / "checkpoints/resume.pt")

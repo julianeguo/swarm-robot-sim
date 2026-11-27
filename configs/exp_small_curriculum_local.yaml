@@ -1,0 +1,6 @@
+# Same as exp_small_curriculum.yaml, but the actor sees the robot-centred target window
+# (radius 3) instead of its position + the whole target map. 43 inputs instead of 339.
+inherits: exp_small_curriculum.yaml
+
+observation:
+  type: local
